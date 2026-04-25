@@ -5,7 +5,7 @@ metadata:
   description: CoreWAF Starter Kit — customer-facing entry point; the only artifact end customers download to deploy a CoreWAF data plane on their host.
   annotations:
     backstage.io/techdocs-ref: dir:.
-    github.com/project-slug: lelcuk/corewaf-starter-kit
+    github.com/project-slug: ext-corero/corewaf-starter-kit
   tags:
     - waf
     - service
