@@ -10,8 +10,7 @@
 # the script works on any POSIX host.
 #
 # Eventually replaced by an API-key-driven curl bootstrap that auto-fills
-# config.ini via the discovery service over the Zero Trust tunnel — see
-# docs/requirements.md §2.
+# config.ini via the discovery service over the Zero Trust tunnel.
 
 set -euo pipefail
 

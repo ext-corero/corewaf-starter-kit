@@ -43,8 +43,6 @@ spinners when it's available, with plain-text fallbacks when it isn't.
 | 3 | `caddy` + `caddy-bridge` (long-running) | Caddy boots in pre-provisioning mode; the bridge registers with CoreWAF and waits. Once the backend provisions, traffic flows. |
 | 4 | `alloy` + `valkey` (long-running, parallel) | Telemetry begins flowing immediately, regardless of provisioning state. |
 
-See [`docs/requirements.md`](docs/requirements.md) for the full design.
-
 ## Requirements on your host
 
 - Docker, with the running user able to use the socket.
