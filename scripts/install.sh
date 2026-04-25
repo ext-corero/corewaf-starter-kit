@@ -40,7 +40,76 @@ done
 
 # ---------------------------------------------------------------------------
 # UI helpers — gum if present, plain read otherwise.
+#
+# If gum isn't on PATH we try to grab a static binary from charmbracelet's
+# GitHub release tarball into ${REPO_ROOT}/.bin/gum (gitignored). The
+# customer's host stays untouched; .bin lives with the kit checkout.
+# Cached across runs.
 # ---------------------------------------------------------------------------
+
+ensure_gum() {
+    # Already on PATH? Nothing to do.
+    if command -v gum >/dev/null 2>&1; then
+        return 0
+    fi
+    # Already cached locally from a prior run?
+    if [ -x "${REPO_ROOT}/.bin/gum" ]; then
+        export PATH="${REPO_ROOT}/.bin:${PATH}"
+        return 0
+    fi
+
+    local version="0.16.0"
+    local os arch
+    os=$(uname -s)
+    arch=$(uname -m)
+    case "${arch}" in
+        x86_64|amd64)  arch=x86_64 ;;
+        arm64|aarch64) arch=arm64  ;;
+        *)
+            printf '(gum auto-install: unsupported arch %s — falling back to plain prompts)\n' "${arch}" >&2
+            return 0
+            ;;
+    esac
+    case "${os}" in
+        Linux|Darwin) ;;
+        *)
+            printf '(gum auto-install: unsupported OS %s — falling back to plain prompts)\n' "${os}" >&2
+            return 0
+            ;;
+    esac
+
+    local tarball="gum_${version}_${os}_${arch}.tar.gz"
+    local url="https://github.com/charmbracelet/gum/releases/download/v${version}/${tarball}"
+    local tmp; tmp=$(mktemp -d)
+
+    printf 'Fetching gum %s for %s/%s ...\n' "${version}" "${os}" "${arch}" >&2
+    if ! curl -fsSL "${url}" -o "${tmp}/${tarball}"; then
+        printf '(gum auto-install: download failed — falling back to plain prompts)\n' >&2
+        rm -rf "${tmp}"
+        return 0
+    fi
+    if ! tar -xzf "${tmp}/${tarball}" -C "${tmp}"; then
+        printf '(gum auto-install: extract failed — falling back to plain prompts)\n' >&2
+        rm -rf "${tmp}"
+        return 0
+    fi
+
+    mkdir -p "${REPO_ROOT}/.bin"
+    # Tarball layout: gum_VER_OS_ARCH/gum (plus README, LICENSE, etc.)
+    local extracted="${tmp}/gum_${version}_${os}_${arch}/gum"
+    if [ ! -x "${extracted}" ]; then
+        printf '(gum auto-install: binary not found in tarball — falling back to plain prompts)\n' >&2
+        rm -rf "${tmp}"
+        return 0
+    fi
+    mv "${extracted}" "${REPO_ROOT}/.bin/gum"
+    rm -rf "${tmp}"
+
+    export PATH="${REPO_ROOT}/.bin:${PATH}"
+}
+
+ensure_gum
+
 HAS_GUM=0
 if command -v gum >/dev/null 2>&1; then
     HAS_GUM=1

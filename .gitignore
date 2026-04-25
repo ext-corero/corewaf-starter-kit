@@ -10,6 +10,9 @@ runtime/
 discovery.json
 hwinfo/
 
+# Auto-installed gum binary (see scripts/install.sh::ensure_gum)
+.bin/
+
 # Editor / OS detritus
 .DS_Store
 *.swp
