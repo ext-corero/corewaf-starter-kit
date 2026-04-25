@@ -6,7 +6,7 @@
     "sources": {
       "ghcr.io/ext-corero/waf/orchestrator": "latest",
       "ghcr.io/ext-corero/waf/caddy-bridge": "latest",
-      "caddy": "2",
+      "ghcr.io/ext-corero/waf/caddy-waf": "latest",
       "valkey/valkey": "8",
       "grafana/alloy": "v1.7.5"
     },

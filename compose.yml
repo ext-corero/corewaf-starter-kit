@@ -82,7 +82,7 @@ services:
   # Stage 3 — Caddy + Bridge (long-running, waits for backend provisioning)
   # ------------------------------------------------------------------
   caddy:
-    image: ghcr.io/ext-corero/waf/caddy:latest
+    image: ghcr.io/ext-corero/waf/caddy-waf:latest
     container_name: corewaf-caddy
     restart: unless-stopped
     cap_add:
