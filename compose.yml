@@ -1,24 +1,17 @@
 ---
 # CoreWAF Starter Kit — the customer's docker compose stack.
 #
-# Boot sequence (see docs/requirements.md §4):
+# Boot sequence:
 #
-#   0. template-source — one-shot. Pulls the orchestrator templates
-#                        (Caddyfile.tmpl, alloy.tmpl) out of the caddy-waf
-#                        image into a shared docker volume, and folds in
-#                        the kit's compose.env.tmpl so the templates stage
-#                        sees one consistent source tree.
-#   1. discover        — privileged, one-shot. Probes host, validates
-#                        prereqs, writes discovery.json + bootstrap into
-#                        the hwinfo volume.
-#   2. templates       — one-shot. Renders runtime/Caddyfile,
-#                        runtime/config.alloy, and runtime/.env from the
-#                        templates volume + bootstrap.
-#   3. caddy + caddy-bridge — long-running. Caddy boots from the rendered
-#                        Caddyfile; bridge registers with the CoreWAF
-#                        backend and waits to be provisioned.
-#   4. alloy + valkey  — long-running. Start in parallel with stage 3 so
-#                        telemetry begins flowing immediately.
+#   1. instance-init — privileged, one-shot. Probes the host (machine_id,
+#                      hardware fingerprint, instance UUID, perf envelope),
+#                      validates prereqs, renders the runtime configs from
+#                      its bundled templates + your config.ini, exits.
+#   2. caddy + caddy-bridge — long-running. Caddy boots in pre-provisioning
+#                      mode; the bridge registers with the CoreWAF backend
+#                      and waits to be provisioned.
+#   3. alloy + valkey  — long-running, parallel. Telemetry begins flowing
+#                      immediately, regardless of provisioning state.
 
 x-logging: &x-default-logging
   driver: "json-file"
@@ -35,8 +28,6 @@ networks:
     internal: true
 
 volumes:
-  templates:        # populated by template-source from the caddy-waf image
-  hwinfo:           # discovery.json + bootstrap, shared discover→templates→bridge
   caddy_data:
   caddy_config:
   caddy_logs:       # caddy access + coraza logs, read by alloy
@@ -46,40 +37,16 @@ volumes:
 services:
 
   # ------------------------------------------------------------------
-  # Stage 0 — Template source (export image-bundled templates to volume)
+  # Stage 1 — Privileged init (host probe + template render)
   # ------------------------------------------------------------------
-  template-source:
-    image: ghcr.io/ext-corero/waf/caddy-waf:latest
-    container_name: corewaf-template-source
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - |
-        set -e
-        cp -r /opt/corewaf/templates/. /var/lib/templates/
-        if [ -d /workspace/templates ]; then
-            cp -r /workspace/templates/. /var/lib/templates/
-        fi
-        ls /var/lib/templates/
-    volumes:
-      - templates:/var/lib/templates
-      - ./templates:/workspace/templates:ro
-    restart: "no"
-    logging: *x-default-logging
-
-  # ------------------------------------------------------------------
-  # Stage 1 — Discovery
-  # ------------------------------------------------------------------
-  discover:
-    image: ghcr.io/ext-corero/waf/orchestrator:latest
-    container_name: corewaf-discover
+  init:
+    image: ghcr.io/ext-corero/waf/instance-init:latest
+    container_name: corewaf-init
     privileged: true
     pid: host
     network_mode: host
-    entrypoint: ["/bin/sh", "-c"]
-    command: ["/workspace/scripts/discover.sh"]
     volumes:
-      - ./:/workspace:ro
-      - hwinfo:/var/lib/hwinfo
+      - ./:/workspace
       - /sys/class/dmi/id:/sys/class/dmi/id:ro
       - /etc/machine-id:/etc/machine-id:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
@@ -87,31 +54,7 @@ services:
     logging: *x-default-logging
 
   # ------------------------------------------------------------------
-  # Stage 2 — Template assembly
-  # ------------------------------------------------------------------
-  templates:
-    image: ghcr.io/ext-corero/waf/orchestrator:latest
-    container_name: corewaf-templates
-    command:
-      - templates
-      - render
-      - --service-dir=/workspace
-      - --manifest=/workspace/service.json
-      - --bootstrap=/var/lib/hwinfo/bootstrap
-    volumes:
-      - ./:/workspace
-      - templates:/workspace/templates:ro    # image-sourced templates over kit's
-      - hwinfo:/var/lib/hwinfo:ro
-    depends_on:
-      template-source:
-        condition: service_completed_successfully
-      discover:
-        condition: service_completed_successfully
-    restart: "no"
-    logging: *x-default-logging
-
-  # ------------------------------------------------------------------
-  # Stage 3 — Caddy + Bridge (long-running, waits for backend provisioning)
+  # Stage 2 — Caddy + Bridge (long-running, waits for backend provisioning)
   # ------------------------------------------------------------------
   caddy:
     image: ghcr.io/ext-corero/waf/caddy-waf:latest
@@ -141,7 +84,7 @@ services:
       retries: 3
       start_period: 10s
     depends_on:
-      templates:
+      init:
         condition: service_completed_successfully
       valkey:
         condition: service_started
@@ -160,11 +103,11 @@ services:
       SERVICE_PORT: 8090
       CADDY_ADMIN_URL: http://caddy:2019
       CADDY_CONTAINER_NAME: corewaf-caddy
-      HWINFO_DIR: /var/lib/hwinfo
+      HWINFO_DIR: /workspace/runtime
       NAMESPACE: default
       HEARTBEAT_INTERVAL_SECONDS: 30
     volumes:
-      - hwinfo:/var/lib/hwinfo:ro
+      - ./runtime:/workspace/runtime:ro
       - /var/run/docker.sock:/var/run/docker.sock
     networks:
       - corewaf-internal
@@ -175,14 +118,14 @@ services:
       retries: 5
       start_period: 10s
     depends_on:
-      templates:
+      init:
         condition: service_completed_successfully
       caddy:
         condition: service_started
     logging: *x-default-logging
 
   # ------------------------------------------------------------------
-  # Stage 4 — Alloy + supporting services (parallel to stage 3)
+  # Stage 3 — Alloy + supporting services (parallel to caddy + bridge)
   # ------------------------------------------------------------------
   alloy:
     image: grafana/alloy:v1.7.5
@@ -202,7 +145,7 @@ services:
     networks:
       - corewaf-internal
     depends_on:
-      templates:
+      init:
         condition: service_completed_successfully
     logging: *x-default-logging
 
@@ -222,6 +165,6 @@ services:
       retries: 5
       start_period: 10s
     depends_on:
-      templates:
+      init:
         condition: service_completed_successfully
     logging: *x-default-logging
