@@ -1,0 +1,53 @@
+{
+	# Rendered by `orchestrator templates render` — do not edit by hand.
+	# Source: templates/Caddyfile.tmpl
+
+	# Coraza must come first; geoip after.
+	order request_id first
+	order coraza_waf after request_id
+	order geoip2_vars after coraza_waf
+
+	admin 0.0.0.0:{{ .Env.CADDY_ADMIN_PORT }}
+	metrics /metrics
+
+	servers {
+		keepalive_interval 30s
+		# Trusted proxies — open question for customer-edit surface (Q3).
+		# For initial deploys, accept private RFC1918 ranges; production
+		# customers will scope this.
+		trusted_proxies static 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 fc00::/7
+	}
+
+	# On-demand TLS — Caddy obtains certs lazily from a public ACME issuer.
+	# Production deployments will replace this with an internal ACME or a
+	# certificate uploaded via the Bridge.
+	on_demand_tls {
+		ask http://always200server:8000/verify
+	}
+}
+
+# Health endpoint open to private networks; everything else 403 until Caddy is
+# provisioned by the backend (the bridge replaces this stub config via /load).
+:80 {
+	@allowedIPs {
+		remote_ip 127.0.0.0/8 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16
+	}
+	handle @allowedIPs {
+		handle /health {
+			respond 200 {
+				body "OK"
+			}
+		}
+	}
+	respond 403
+}
+
+# Pre-provisioning state: respond 503 to anything on 443. The bridge replaces
+# this listener once the backend provisions the instance.
+:443 {
+	tls {
+		on_demand
+		protocols tls1.3
+	}
+	respond "CoreWAF instance awaiting provisioning" 503
+}

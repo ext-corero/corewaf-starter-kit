@@ -1,0 +1,33 @@
+# CoreWAF Starter Kit — customer configuration
+#
+# Copy this file to `config.ini` and fill in the two required values, or
+# run `./scripts/install.sh` for a guided TUI that writes it for you.
+#
+# Eventually the curl-driven bootstrap (with an API key) will produce
+# this file automatically; until then, only two values are required.
+
+# === Required ===
+
+# Org scope ID — identifies your organisation to the CoreWAF backend.
+# Eventually embedded in the API key; today, supplied here.
+org_scope_id=
+
+# Single CoreWAF backend base URL. Telemetry endpoints (Loki, Mimir),
+# the api-server, and any other backend service all route under this URL.
+# Example: https://platform.corewaf.example.com
+observability_base_url=
+
+# === Optional ===
+
+# Free-form comment attached to this instance at registration. Shown in
+# the operator GUI alongside the instance — useful for "rack 4, slot 7"
+# or "demo for ACME on 2026-04-25" style notes.
+instance_comment=
+
+# Override Caddy admin port if 2019 conflicts on your host.
+# caddy_admin_port=2019
+
+# === Reserved (do not edit) ===
+# These are populated automatically by the discovery stage at boot:
+#   machine_id, hardware_fingerprint, hostname, instance_name
+# Anything you set here will be overwritten.

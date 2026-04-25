@@ -1,0 +1,19 @@
+# Customer-supplied configuration (never committed)
+config.ini
+
+# Rendered runtime artifacts (output of the templates stage)
+runtime/
+.runtime/
+
+# Local Docker / orchestrator state
+.discover/
+discovery.json
+hwinfo/
+
+# Editor / OS detritus
+.DS_Store
+*.swp
+*.swo
+*~
+.idea/
+.vscode/

@@ -1,0 +1,190 @@
+---
+# CoreWAF Starter Kit — the customer's docker compose stack.
+#
+# Boot sequence (see docs/requirements.md §4):
+#
+#   1. discover   — privileged, one-shot. Probes host, validates prereqs,
+#                   writes discovery.json + bootstrap into the hwinfo volume.
+#   2. templates  — one-shot. Renders runtime/Caddyfile, runtime/config.alloy,
+#                   and runtime/.env from templates/ + bootstrap.
+#   3. caddy + caddy-bridge — long-running. Caddy starts with the empty
+#                   pre-provisioning config; the bridge registers with the
+#                   CoreWAF backend and waits to be provisioned.
+#   4. alloy + valkey — long-running. Start in parallel with stage 3 so
+#                   telemetry begins flowing immediately.
+
+x-logging: &x-default-logging
+  driver: "json-file"
+  options:
+    max-size: "100m"
+    max-file: "5"
+    compress: "true"
+
+networks:
+  corewaf-edge:
+    driver: bridge
+  corewaf-internal:
+    driver: bridge
+    internal: true
+
+volumes:
+  hwinfo:           # discovery.json + bootstrap, shared discover→templates→bridge
+  caddy_data:
+  caddy_config:
+  caddy_logs:       # caddy access + coraza logs, read by alloy
+  alloy_data:
+  valkey_data:
+
+services:
+
+  # ------------------------------------------------------------------
+  # Stage 1 — Discovery
+  # ------------------------------------------------------------------
+  discover:
+    image: ghcr.io/ext-corero/waf/orchestrator:latest
+    container_name: corewaf-discover
+    privileged: true
+    pid: host
+    network_mode: host
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["/workspace/scripts/discover.sh"]
+    volumes:
+      - ./:/workspace:ro
+      - hwinfo:/var/lib/hwinfo
+      - /sys/class/dmi/id:/sys/class/dmi/id:ro
+      - /etc/machine-id:/etc/machine-id:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    restart: "no"
+    logging: *x-default-logging
+
+  # ------------------------------------------------------------------
+  # Stage 2 — Template assembly
+  # ------------------------------------------------------------------
+  templates:
+    image: ghcr.io/ext-corero/waf/orchestrator:latest
+    container_name: corewaf-templates
+    command:
+      - templates
+      - render
+      - --service-dir=/workspace
+      - --manifest=/workspace/service.json
+      - --bootstrap=/var/lib/hwinfo/bootstrap
+    volumes:
+      - ./:/workspace
+      - hwinfo:/var/lib/hwinfo:ro
+    depends_on:
+      discover:
+        condition: service_completed_successfully
+    restart: "no"
+    logging: *x-default-logging
+
+  # ------------------------------------------------------------------
+  # Stage 3 — Caddy + Bridge (long-running, waits for backend provisioning)
+  # ------------------------------------------------------------------
+  caddy:
+    image: ghcr.io/ext-corero/waf/caddy:latest
+    container_name: corewaf-caddy
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+      - SYS_RESOURCE
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./runtime/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+      - caddy_logs:/var/log/caddy
+    networks:
+      - corewaf-edge
+      - corewaf-internal
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    depends_on:
+      templates:
+        condition: service_completed_successfully
+    labels:
+      corewaf.io/managed: "true"
+    logging: *x-default-logging
+
+  caddy-bridge:
+    image: ghcr.io/ext-corero/waf/caddy-bridge:latest
+    container_name: corewaf-bridge
+    restart: unless-stopped
+    env_file:
+      - ./runtime/.env
+    environment:
+      SERVICE_HOST: 0.0.0.0
+      SERVICE_PORT: 8090
+      CADDY_ADMIN_URL: http://caddy:2019
+      CADDY_CONTAINER_NAME: corewaf-caddy
+      HWINFO_DIR: /var/lib/hwinfo
+      NAMESPACE: default
+      HEARTBEAT_INTERVAL_SECONDS: 30
+    volumes:
+      - hwinfo:/var/lib/hwinfo:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - corewaf-internal
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:8090/health"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    depends_on:
+      templates:
+        condition: service_completed_successfully
+      caddy:
+        condition: service_started
+    logging: *x-default-logging
+
+  # ------------------------------------------------------------------
+  # Stage 4 — Alloy + supporting services (parallel to stage 3)
+  # ------------------------------------------------------------------
+  alloy:
+    image: grafana/alloy:v1.7.5
+    container_name: corewaf-alloy
+    restart: unless-stopped
+    command:
+      - run
+      - --server.http.listen-addr=0.0.0.0:12345
+      - --storage.path=/var/lib/alloy/data
+      - --disable-reporting
+      - /etc/alloy/
+    volumes:
+      - ./runtime/config.alloy:/etc/alloy/config.alloy:ro
+      - alloy_data:/var/lib/alloy/data
+      - caddy_logs:/caddy_logs:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - corewaf-internal
+    depends_on:
+      templates:
+        condition: service_completed_successfully
+    logging: *x-default-logging
+
+  valkey:
+    image: valkey/valkey:8
+    container_name: corewaf-valkey
+    restart: unless-stopped
+    command: valkey-server --maxmemory 128mb --appendonly no
+    volumes:
+      - valkey_data:/data
+    networks:
+      - corewaf-internal
+    healthcheck:
+      test: ["CMD-SHELL", "valkey-cli ping | grep PONG"]
+      interval: 30s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    depends_on:
+      templates:
+        condition: service_completed_successfully
+    logging: *x-default-logging

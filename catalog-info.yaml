@@ -1,0 +1,18 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: corewaf-starter-kit
+  description: CoreWAF Starter Kit — customer-facing entry point; the only artifact end customers download to deploy a CoreWAF data plane on their host.
+  annotations:
+    backstage.io/techdocs-ref: dir:.
+    github.com/project-slug: ext-corero/corewaf-starter-kit
+  tags:
+    - waf
+    - service
+    - data-plane
+    - customer-facing
+spec:
+  type: service
+  lifecycle: production
+  owner: group:default/platform-team
+  system: corewaf-waf

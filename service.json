@@ -1,0 +1,68 @@
+{
+  "version": "0.0.4",
+  "service": {
+    "name": "corewaf-starter-kit",
+    "description": "Customer-facing CoreWAF data plane. Self-bootstraps on host: discovery → templates → caddy + bridge (waiting for backend provisioning) → alloy + supporting services (telemetry parallel).",
+    "sources": {
+      "ghcr.io/ext-corero/waf/orchestrator": "latest",
+      "ghcr.io/ext-corero/waf/caddy-bridge": "latest",
+      "caddy": "2",
+      "valkey/valkey": "8",
+      "grafana/alloy": "v1.7.5"
+    },
+    "files": [
+      "service.json",
+      "compose.yml",
+      "config.ini.example",
+      "scripts/install.sh",
+      "scripts/discover.sh",
+      "templates/Caddyfile.tmpl",
+      "templates/alloy.tmpl",
+      "templates/compose.env.tmpl"
+    ],
+    "variables": {
+      "INSTANCE_COMMENT": "${instance_comment}",
+      "ORG_SCOPE_ID": "${org_scope_id}",
+      "OBSERVABILITY_BASE_URL": "${observability_base_url}",
+      "LOKI_URL": "${observability_base_url}/loki/api/v1/push",
+      "MIMIR_URL": "${observability_base_url}/api/v1/write",
+      "API_GATEWAY_URL": "${observability_base_url}/api",
+      "MACHINE_ID": "${machine_id}",
+      "HARDWARE_FINGERPRINT": "${hardware_fingerprint}",
+      "HOSTNAME": "${hostname}",
+      "INSTANCE_NAME": "${instance_name}",
+      "CADDY_ADMIN_PORT": "2019"
+    },
+    "docker": {
+      "networks": [
+        {"corewaf-edge": "bridge"},
+        {"corewaf-internal": "bridge"}
+      ],
+      "volumes": [
+        {"hwinfo": "recreate"},
+        {"caddy_data": "keep"},
+        {"caddy_config": "keep"},
+        {"caddy_logs": "keep"},
+        {"alloy_data": "keep"},
+        {"valkey_data": "keep"}
+      ]
+    },
+    "templates": [
+      {
+        "source": "templates/Caddyfile.tmpl",
+        "destination": "runtime/Caddyfile",
+        "overwrite": true
+      },
+      {
+        "source": "templates/alloy.tmpl",
+        "destination": "runtime/config.alloy",
+        "overwrite": true
+      },
+      {
+        "source": "templates/compose.env.tmpl",
+        "destination": "runtime/.env",
+        "overwrite": true
+      }
+    ]
+  }
+}
