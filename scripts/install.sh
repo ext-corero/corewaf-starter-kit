@@ -168,10 +168,23 @@ if [ "${DO_UP}" = "0" ]; then
 fi
 
 ui_header "Bringing up the stack"
-ui_note "Stage 1 (discover) is privileged and will take a moment."
-
 cd "${REPO_ROOT}"
-docker compose up -d
+
+# Compose evaluates env_file at container CREATE time, not start time, so
+# we run discover + templates explicitly first (rendering runtime/.env with
+# real values) and then bring up the long-running services with --no-deps
+# so they're created against the populated env_file.
+mkdir -p runtime
+[ -f runtime/.env ] || : > runtime/.env
+
+ui_note "Stage 1: discover (privileged — takes a moment)"
+docker compose run --rm discover
+
+ui_note "Stage 2: templates"
+docker compose run --rm templates
+
+ui_note "Stages 3-4: caddy + bridge (waiting for backend) and alloy + valkey (telemetry parallel)"
+docker compose up -d --no-deps caddy caddy-bridge alloy valkey
 
 ui_note "Stack is up. Tail logs with: docker compose logs -f caddy-bridge"
 ui_note "Caddy will wait for the CoreWAF backend to provision it before serving traffic; telemetry starts flowing immediately."
