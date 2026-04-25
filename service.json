@@ -14,10 +14,9 @@
       "service.json",
       "compose.yml",
       "config.ini.example",
+      "bootstrap.sh",
       "scripts/install.sh",
       "scripts/discover.sh",
-      "templates/Caddyfile.tmpl",
-      "templates/alloy.tmpl",
       "templates/compose.env.tmpl"
     ],
     "variables": {

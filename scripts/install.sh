@@ -92,6 +92,17 @@ ui_confirm() {
     fi
 }
 
+ui_run() {
+    # $1: spinner title   $2..: command to run
+    local title="$1"; shift
+    if [ "${HAS_GUM}" = "1" ]; then
+        gum spin --spinner dot --title "${title}" --show-output -- "$@"
+    else
+        printf '… %s\n' "${title}" >&2
+        "$@"
+    fi
+}
+
 # ---------------------------------------------------------------------------
 # Preflight
 # ---------------------------------------------------------------------------
@@ -171,20 +182,25 @@ ui_header "Bringing up the stack"
 cd "${REPO_ROOT}"
 
 # Compose evaluates env_file at container CREATE time, not start time, so
-# we run discover + templates explicitly first (rendering runtime/.env with
-# real values) and then bring up the long-running services with --no-deps
-# so they're created against the populated env_file.
+# we run template-source + discover + templates explicitly first (rendering
+# runtime/.env with real values) and then bring up the long-running services
+# with --no-deps so they're created against the populated env_file.
 mkdir -p runtime
 [ -f runtime/.env ] || : > runtime/.env
 
-ui_note "Stage 1: discover (privileged — takes a moment)"
-docker compose run --rm discover
+ui_run "Stage 0: template-source (export image-bundled templates)" \
+    docker compose run --rm template-source
 
-ui_note "Stage 2: templates"
-docker compose run --rm templates
+ui_run "Stage 1: discover (privileged probe)" \
+    docker compose run --rm discover
 
-ui_note "Stages 3-4: caddy + bridge (waiting for backend) and alloy + valkey (telemetry parallel)"
-docker compose up -d --no-deps caddy caddy-bridge alloy valkey
+ui_run "Stage 2: templates (render runtime config)" \
+    docker compose run --rm templates
 
+ui_run "Stages 3-4: caddy + bridge + alloy + valkey" \
+    docker compose up -d --no-deps caddy caddy-bridge alloy valkey
+
+ui_note ""
 ui_note "Stack is up. Tail logs with: docker compose logs -f caddy-bridge"
-ui_note "Caddy will wait for the CoreWAF backend to provision it before serving traffic; telemetry starts flowing immediately."
+ui_note "Caddy will wait for the CoreWAF backend to provision it before serving traffic;"
+ui_note "telemetry starts flowing immediately via Alloy."

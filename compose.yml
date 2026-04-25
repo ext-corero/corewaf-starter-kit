@@ -3,15 +3,22 @@
 #
 # Boot sequence (see docs/requirements.md §4):
 #
-#   1. discover   — privileged, one-shot. Probes host, validates prereqs,
-#                   writes discovery.json + bootstrap into the hwinfo volume.
-#   2. templates  — one-shot. Renders runtime/Caddyfile, runtime/config.alloy,
-#                   and runtime/.env from templates/ + bootstrap.
-#   3. caddy + caddy-bridge — long-running. Caddy starts with the empty
-#                   pre-provisioning config; the bridge registers with the
-#                   CoreWAF backend and waits to be provisioned.
-#   4. alloy + valkey — long-running. Start in parallel with stage 3 so
-#                   telemetry begins flowing immediately.
+#   0. template-source — one-shot. Pulls the orchestrator templates
+#                        (Caddyfile.tmpl, alloy.tmpl) out of the caddy-waf
+#                        image into a shared docker volume, and folds in
+#                        the kit's compose.env.tmpl so the templates stage
+#                        sees one consistent source tree.
+#   1. discover        — privileged, one-shot. Probes host, validates
+#                        prereqs, writes discovery.json + bootstrap into
+#                        the hwinfo volume.
+#   2. templates       — one-shot. Renders runtime/Caddyfile,
+#                        runtime/config.alloy, and runtime/.env from the
+#                        templates volume + bootstrap.
+#   3. caddy + caddy-bridge — long-running. Caddy boots from the rendered
+#                        Caddyfile; bridge registers with the CoreWAF
+#                        backend and waits to be provisioned.
+#   4. alloy + valkey  — long-running. Start in parallel with stage 3 so
+#                        telemetry begins flowing immediately.
 
 x-logging: &x-default-logging
   driver: "json-file"
@@ -28,6 +35,7 @@ networks:
     internal: true
 
 volumes:
+  templates:        # populated by template-source from the caddy-waf image
   hwinfo:           # discovery.json + bootstrap, shared discover→templates→bridge
   caddy_data:
   caddy_config:
@@ -36,6 +44,27 @@ volumes:
   valkey_data:
 
 services:
+
+  # ------------------------------------------------------------------
+  # Stage 0 — Template source (export image-bundled templates to volume)
+  # ------------------------------------------------------------------
+  template-source:
+    image: ghcr.io/ext-corero/waf/caddy-waf:latest
+    container_name: corewaf-template-source
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        cp -r /opt/corewaf/templates/. /var/lib/templates/
+        if [ -d /workspace/templates ]; then
+            cp -r /workspace/templates/. /var/lib/templates/
+        fi
+        ls /var/lib/templates/
+    volumes:
+      - templates:/var/lib/templates
+      - ./templates:/workspace/templates:ro
+    restart: "no"
+    logging: *x-default-logging
 
   # ------------------------------------------------------------------
   # Stage 1 — Discovery
@@ -71,8 +100,11 @@ services:
       - --bootstrap=/var/lib/hwinfo/bootstrap
     volumes:
       - ./:/workspace
+      - templates:/workspace/templates:ro    # image-sourced templates over kit's
       - hwinfo:/var/lib/hwinfo:ro
     depends_on:
+      template-source:
+        condition: service_completed_successfully
       discover:
         condition: service_completed_successfully
     restart: "no"
@@ -91,6 +123,9 @@ services:
     ports:
       - "80:80"
       - "443:443"
+    environment:
+      REDIS_HOST: valkey
+      REDIS_PORT: "6379"
     volumes:
       - ./runtime/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
@@ -108,6 +143,8 @@ services:
     depends_on:
       templates:
         condition: service_completed_successfully
+      valkey:
+        condition: service_started
     labels:
       corewaf.io/managed: "true"
     logging: *x-default-logging
@@ -156,7 +193,7 @@ services:
       - --server.http.listen-addr=0.0.0.0:12345
       - --storage.path=/var/lib/alloy/data
       - --disable-reporting
-      - /etc/alloy/
+      - /etc/alloy/config.alloy
     volumes:
       - ./runtime/config.alloy:/etc/alloy/config.alloy:ro
       - alloy_data:/var/lib/alloy/data
