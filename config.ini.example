@@ -12,9 +12,11 @@
 # Eventually embedded in the API key; today, supplied here.
 org_scope_id=
 
-# Single CoreWAF backend base URL. Telemetry endpoints (Loki, Mimir),
-# the api-server, and any other backend service all route under this URL.
-# Example: https://platform.corewaf.example.com
+# Hostname (without scheme) of the CoreWAF observability deployment.
+# Telemetry endpoints are derived as subdomains: loki.<host>, mimir.<host>,
+# etc. — that's why this is a host, not a full URL. Eventually folded
+# into the API key returned by the future bootstrap exchange.
+# Example: platform.corewaf.example.com
 observability_base_url=
 
 # CoreWAF API gateway URL. The bridge talks to caddy-api at

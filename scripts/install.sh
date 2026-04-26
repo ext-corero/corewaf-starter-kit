@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # CoreWAF Starter Kit — interactive installer.
 #
-# Walks the customer through the two required config.ini values
-# (org_scope_id, observability_base_url) plus the optional instance
-# comment. Writes config.ini in the repo root and (unless --no-up)
-# launches the stack with `docker compose up -d`.
+# Walks the customer through the three required config.ini values
+# (org_scope_id, observability_base_url, api_gateway_url) plus the
+# optional instance comment. Writes config.ini in the repo root and
+# (unless --no-up) launches the stack with `docker compose up -d`.
 #
 # Uses `gum` for the TUI when available; falls back to plain `read` so
 # the script works on any POSIX host.
@@ -209,14 +209,14 @@ done
 
 OBSERVABILITY_BASE_URL=""
 while [ -z "${OBSERVABILITY_BASE_URL}" ]; do
-    OBSERVABILITY_BASE_URL=$(ui_input "Observability base URL" "https://platform.corewaf.example.com")
+    OBSERVABILITY_BASE_URL=$(ui_input "Observability hostname" "platform.corewaf.example.com")
     case "${OBSERVABILITY_BASE_URL}" in
-        http://*|https://*) ;;
-        "") ui_note "Observability base URL is required." ;;
-        *)
-            ui_note "URL must start with http:// or https://"
+        "") ui_note "Observability hostname is required." ;;
+        http://*|https://*)
+            ui_note "Hostname only — no scheme. Drop the http:// or https://"
             OBSERVABILITY_BASE_URL=""
             ;;
+        *) ;;
     esac
 done
 

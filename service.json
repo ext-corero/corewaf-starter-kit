@@ -22,9 +22,9 @@
     "variables": {
       "INSTANCE_COMMENT": "${instance_comment}",
       "ORG_SCOPE_ID": "${org_scope_id}",
-      "OBSERVABILITY_BASE_URL": "${observability_base_url}",
-      "LOKI_URL": "loki.${observability_base_url}/loki/api/v1/push",
-      "MIMIR_URL": "mimir.${observability_base_url}/api/v1/write",
+      "OBSERVABILITY_BASE_URL": "https://${observability_base_url}",
+      "LOKI_URL": "https://loki.${observability_base_url}/loki/api/v1/push",
+      "MIMIR_URL": "https://mimir.${observability_base_url}/api/v1/write",
       "API_GATEWAY_URL": "${api_gateway_url}",
       "MACHINE_ID": "${machine_id}",
       "HARDWARE_FINGERPRINT": "${hardware_fingerprint}",
