@@ -220,6 +220,19 @@ while [ -z "${OBSERVABILITY_BASE_URL}" ]; do
     esac
 done
 
+API_GATEWAY_URL=""
+while [ -z "${API_GATEWAY_URL}" ]; do
+    API_GATEWAY_URL=$(ui_input "API gateway URL" "https://api.corewaf.example.com")
+    case "${API_GATEWAY_URL}" in
+        http://*|https://*) ;;
+        "") ui_note "API gateway URL is required." ;;
+        *)
+            ui_note "URL must start with http:// or https://"
+            API_GATEWAY_URL=""
+            ;;
+    esac
+done
+
 INSTANCE_COMMENT=$(ui_input "Instance comment (optional, free-form)" "rack 4, slot 7")
 
 # ---------------------------------------------------------------------------
@@ -233,6 +246,7 @@ cat > "${CONFIG_INI}" <<EOF
 
 org_scope_id=${ORG_SCOPE_ID}
 observability_base_url=${OBSERVABILITY_BASE_URL}
+api_gateway_url=${API_GATEWAY_URL}
 instance_comment=${INSTANCE_COMMENT}
 EOF
 
