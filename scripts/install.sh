@@ -310,22 +310,22 @@ ui_run "Stage 2: tunnel (redeem token + bring up wg100)" \
 #
 # The flip side: --no-deps also bypasses `caddy-bridge depends_on:
 # tunnel: service_healthy`, so we block here until tunnel is healthy
-# ourselves before bringing the rest up.
-wait_tunnel_healthy() {
-    local deadline=$(( $(date +%s) + 60 ))
-    while [ "$(date +%s)" -lt "$deadline" ]; do
-        local status
-        status=$(docker compose ps --format '{{.Health}}' tunnel 2>/dev/null | head -1)
-        case "$status" in
-            healthy) return 0 ;;
-        esac
-        sleep 2
-    done
+# ourselves before bringing the rest up. Inlined (not via ui_run +
+# gum spin) because gum spin exec's external programs and can't see
+# bash functions.
+ui_note "Waiting for tunnel to become healthy ..."
+_deadline=$(( $(date +%s) + 60 ))
+while [ "$(date +%s)" -lt "$_deadline" ]; do
+    _status=$(docker compose ps --format '{{.Health}}' tunnel 2>/dev/null | head -1)
+    [ "$_status" = "healthy" ] && break
+    sleep 2
+done
+if [ "$_status" != "healthy" ]; then
     echo "ERROR: tunnel did not become healthy within 60s" >&2
     docker compose logs --tail=30 tunnel >&2
-    return 1
-}
-ui_run "Waiting for tunnel to become healthy" wait_tunnel_healthy
+    exit 1
+fi
+ui_note "Tunnel healthy."
 
 ui_run "Stage 3: caddy + bridge + alloy + valkey" \
     docker compose up -d --no-deps caddy caddy-bridge alloy valkey
