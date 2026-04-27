@@ -7,7 +7,7 @@
 
 set -euo pipefail
 
-WG_INTERFACE="${WG_INTERFACE:-wg0}"
+WG_INTERFACE="${WG_INTERFACE:-wg100}"
 HANDSHAKE_MAX_AGE="${HANDSHAKE_MAX_AGE:-180}"
 
 ip link show "$WG_INTERFACE" >/dev/null 2>&1 || { echo "no $WG_INTERFACE"; exit 1; }

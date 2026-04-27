@@ -71,13 +71,20 @@ services:
     image: ghcr.io/ext-corero/waf/tunnel-client:latest
     container_name: corewaf-tunnel
     restart: unless-stopped
-    network_mode: host                             # wg0 lives on host kernel
+    network_mode: host                             # wg100 lives on host kernel
     cap_add:
       - NET_ADMIN
       - SYS_MODULE
-    sysctls:
-      net.ipv4.ip_forward: 1
-      net.ipv4.conf.all.src_valid_mark: 1
+    # sysctls don't work with network_mode: host; ip_forward is already
+    # set on most hosts that run docker.
+    environment:
+      # Distinct interface so the kit can coexist with the rig's wg0
+      # on the same host for end-to-end testing. Override per-deployment.
+      WG_INTERFACE: wg100
+      # Same-host testing override: narrow the route added by wg-quick
+      # to just the server (avoids colliding with the rig's
+      # `100.64.0.0/16 dev wg0`). Comment out for two-host deploys.
+      TUNNEL_ALLOWED_IPS: 100.64.0.1/32
     volumes:
       - ./:/workspace                              # config.ini + runtime/.env
       - tunnel_state:/var/lib/tunnel               # keypair + state.json
