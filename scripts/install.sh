@@ -188,7 +188,12 @@ if [ "${HAS_GUM}" = "0" ]; then
 fi
 
 if [ -f "${CONFIG_INI}" ]; then
-    if ! ui_confirm "config.ini already exists — overwrite?"; then
+    # Non-interactive (TOKEN env supplied OR no TTY): assume overwrite.
+    # The whole point of TOKEN= is automation — refusing to overwrite
+    # would leave the operator stuck with a stale token from a prior run.
+    if [ -n "${TOKEN:-${COREWAF_TOKEN:-}}" ] || [ ! -t 0 ]; then
+        ui_note "Existing config.ini will be overwritten (TOKEN provided / non-interactive)."
+    elif ! ui_confirm "config.ini already exists — overwrite?"; then
         echo "Keeping existing config.ini. Re-run with --no-up if you only want the prompts." >&2
         exit 0
     fi
