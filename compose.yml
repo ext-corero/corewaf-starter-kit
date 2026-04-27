@@ -33,6 +33,9 @@ volumes:
   caddy_logs:       # caddy access + coraza logs, read by alloy
   alloy_data:
   valkey_data:
+  tunnel_state:     # WG keypair + redemption state. Survives
+                    # `compose down`; `compose down -v` wipes it and
+                    # forces fresh redemption (requires a new token).
 
 services:
 
@@ -51,6 +54,43 @@ services:
       - /etc/machine-id:/etc/machine-id:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
     restart: "no"
+    logging: *x-default-logging
+
+  # ------------------------------------------------------------------
+  # Stage 1.5 — WireGuard tunnel (feature/tunnel-v0)
+  # ------------------------------------------------------------------
+  # Redeems the provisioning_token in config.ini for a tunnel config,
+  # brings up wg0 in the host network namespace, and merges the
+  # bridge's runtime credentials (apiEndpoint, zeroTrustApiKey, …)
+  # into runtime/.env. Other long-running services depend on this via
+  # service_healthy so they don't start with an unconfigured backend.
+  tunnel:
+    build:
+      context: ./tunnel-client
+      dockerfile: Dockerfile
+    image: ghcr.io/ext-corero/waf/tunnel-client:latest
+    container_name: corewaf-tunnel
+    restart: unless-stopped
+    network_mode: host                             # wg0 lives on host kernel
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    sysctls:
+      net.ipv4.ip_forward: 1
+      net.ipv4.conf.all.src_valid_mark: 1
+    volumes:
+      - ./:/workspace                              # config.ini + runtime/.env
+      - tunnel_state:/var/lib/tunnel               # keypair + state.json
+      - /lib/modules:/lib/modules:ro               # WG kernel module access
+    healthcheck:
+      test: ["CMD", "/opt/tunnel-client/healthcheck.sh"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 30s
+    depends_on:
+      init:
+        condition: service_completed_successfully
     logging: *x-default-logging
 
   # ------------------------------------------------------------------
@@ -122,6 +162,8 @@ services:
         condition: service_completed_successfully
       caddy:
         condition: service_started
+      tunnel:
+        condition: service_healthy
     logging: *x-default-logging
 
   # ------------------------------------------------------------------
