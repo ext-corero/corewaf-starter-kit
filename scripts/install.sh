@@ -248,19 +248,27 @@ ui_header "Bringing up the stack"
 cd "${REPO_ROOT}"
 
 # Compose evaluates env_file at container CREATE time, not start time, so
-# we run init explicitly first (rendering runtime/.env with real values)
-# and then bring up the long-running services with --no-deps so they're
-# created against the populated env_file.
+# we run init explicitly first (rendering runtime/.env with the legacy
+# baseline values from config.ini). The tunnel container then redeems
+# the provisioning token on its first start and overwrites runtime/.env
+# with the real api gateway URL, zero-trust API key, etc., before
+# caddy-bridge is created (gated by depends_on: tunnel: service_healthy).
 mkdir -p runtime
 [ -f runtime/.env ] || : > runtime/.env
 
 ui_run "Stage 1: init (privileged — discovery + template render)" \
     docker compose run --rm init
 
-ui_run "Stage 2-3: caddy + bridge + alloy + valkey" \
-    docker compose up -d --no-deps caddy caddy-bridge alloy valkey
+ui_run "Stage 2: tunnel (redeem token + bring up wg100)" \
+    docker compose up -d --no-deps tunnel
+
+ui_run "Stage 3: caddy + bridge + alloy + valkey" \
+    docker compose up -d caddy caddy-bridge alloy valkey
 
 ui_note ""
-ui_note "Stack is up. Tail logs with: docker compose logs -f caddy-bridge"
-ui_note "Caddy will wait for the CoreWAF backend to provision it before serving traffic;"
+ui_note "Stack is up. Tail logs with:"
+ui_note "  docker compose logs -f tunnel        # WG bring-up + redemption"
+ui_note "  docker compose logs -f caddy-bridge  # bridge registration"
+ui_note ""
+ui_note "Caddy waits for the CoreWAF backend to provision it before serving traffic;"
 ui_note "telemetry starts flowing immediately via Alloy."
