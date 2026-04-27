@@ -5,14 +5,24 @@
 # (or refreshes a clone), tries to surface a `gum`-styled UI for the rest
 # of the install, then hands off to scripts/install.sh.
 #
-# Usage:
-#   curl -fsSL https://raw.githubusercontent.com/ext-corero/corewaf-starter-kit/main/bootstrap.sh | bash
+# Usage (process substitution — env stays left of bash, no pipe):
+#   TOKEN=v1.eyJ... bash <(curl -fsSL <bootstrap-url>)
+#
+# Why not `TOKEN=… curl … | bash`? Shell semantics: env-prefix on a
+# pipeline applies only to the FIRST command (curl), not to bash on the
+# right side of the pipe. Process substitution makes `TOKEN=…` apply to
+# bash directly, so install.sh actually sees TOKEN.
+#
+# Required:
+#   TOKEN              Provisioning token issued by the operator.
+#                      Alias: COREWAF_TOKEN. Either works.
 #
 # Optional environment overrides:
-#   COREWAF_REPO    Git URL of the kit (default: github.com/ext-corero/corewaf-starter-kit)
-#   COREWAF_REF     Branch/tag (default: main)
-#   COREWAF_DIR     Where to clone (default: ./corewaf-starter-kit)
-#   NO_UP=1         Don't run `docker compose up` after writing config.ini
+#   COREWAF_REPO       Git URL of the kit (default: github.com/ext-corero/corewaf-starter-kit)
+#   COREWAF_REF        Branch/tag (default: main)
+#   COREWAF_DIR        Where to clone (default: ./corewaf-starter-kit)
+#   INSTANCE_COMMENT   Free-form instance label (alias: COREWAF_INSTANCE_COMMENT)
+#   NO_UP=1            Don't run `docker compose up` after writing config.ini
 
 set -euo pipefail
 

@@ -195,14 +195,37 @@ if [ -f "${CONFIG_INI}" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Prompts
+# Token + comment — env-first, prompt fallback (interactive only)
 # ---------------------------------------------------------------------------
 ui_header "Tell us about this instance"
 
-# Allow non-interactive configuration: COREWAF_TOKEN env var skips the
-# prompt entirely (handy for the API-key-driven bootstrap path and for
-# CI / scripted demos). Same for COREWAF_INSTANCE_COMMENT.
-PROVISIONING_TOKEN="${COREWAF_TOKEN:-}"
+# Convention: TOKEN= is the customer-facing env var name ("TOKEN=…
+# curl … | bash"). COREWAF_TOKEN is kept as an alias so older docs /
+# scripts keep working. Same pattern for INSTANCE_COMMENT.
+PROVISIONING_TOKEN="${TOKEN:-${COREWAF_TOKEN:-}}"
+INSTANCE_COMMENT="${INSTANCE_COMMENT:-${COREWAF_INSTANCE_COMMENT:-}}"
+
+# When the script is run via `curl … | bash`, stdin is the (now-empty)
+# bootstrap pipe — `read` would silently EOF and we'd write a blank
+# token. Detect non-interactive stdin and fail loudly instead.
+if [ -z "${PROVISIONING_TOKEN}" ] && [ ! -t 0 ]; then
+    cat <<EOF >&2
+ERROR: TOKEN is empty.
+
+  When running via curl, use process substitution so TOKEN reaches bash:
+
+    TOKEN=v1.eyJ... bash <(curl -fsSL <bootstrap-url>)
+
+  (NOT \`TOKEN=… curl … | bash\` — env-prefix on a pipeline applies only
+   to curl, not to bash on the right side of the pipe.)
+
+  Or run the installer locally and answer the prompt:
+
+    bash scripts/install.sh
+EOF
+    exit 1
+fi
+
 while [ -z "${PROVISIONING_TOKEN}" ]; do
     PROVISIONING_TOKEN=$(ui_input \
         "Provisioning token (issued by the operator)" \
@@ -217,8 +240,17 @@ while [ -z "${PROVISIONING_TOKEN}" ]; do
     esac
 done
 
-INSTANCE_COMMENT="${COREWAF_INSTANCE_COMMENT:-}"
-[ -z "${INSTANCE_COMMENT}" ] && \
+# Validate token shape even when supplied via env (prevents a silently
+# garbage token from making it to the redemption call).
+case "${PROVISIONING_TOKEN}" in
+    v1.*.*) ;;
+    *)
+        echo "ERROR: TOKEN doesn't look like a v1 envelope (v1.<payload>.<sig>)" >&2
+        exit 1
+        ;;
+esac
+
+[ -z "${INSTANCE_COMMENT}" ] && [ -t 0 ] && \
     INSTANCE_COMMENT=$(ui_input "Instance comment (optional, free-form)" "rack 4, slot 7")
 
 # ---------------------------------------------------------------------------
