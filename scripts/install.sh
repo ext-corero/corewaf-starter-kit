@@ -232,6 +232,14 @@ cat > "${CONFIG_INI}" <<EOF
 
 provisioning_token=${PROVISIONING_TOKEN}
 instance_comment=${INSTANCE_COMMENT}
+
+# v0 transitional placeholders — the instance-init image still
+# validates these as non-empty. Real values arrive in the redemption
+# response and the tunnel-client writes them into runtime/.env after
+# init completes. Drop these once instance-init is updated to v0.
+org_scope_id=pending-redemption
+observability_base_url=pending.redemption.local
+api_gateway_url=http://pending.redemption.local
 EOF
 
 ui_note "Wrote ${CONFIG_INI}"
