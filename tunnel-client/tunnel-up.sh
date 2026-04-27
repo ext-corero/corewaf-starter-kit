@@ -59,10 +59,10 @@ ini_get() {
 }
 
 # Self-locating envelope: v1.<base64url(payload_json)>.<base64url(sig)>.
-# Decode the middle segment to read `gw` (gateway URL). Signature is
-# verified server-side; client just needs the URL.
-decode_gateway_url() {
-    local token="$1"
+# Decode the payload segment — signature is verified server-side; the
+# client only consumes the URL and namespace fields.
+decode_envelope_field() {
+    local token="$1" field="$2"
     local payload_b64
     payload_b64=$(printf '%s' "$token" | awk -F. '{print $2}')
     [ -n "$payload_b64" ] || fail "token has no payload segment"
@@ -74,17 +74,19 @@ decode_gateway_url() {
         2) b64="${b64}==" ;;
         3) b64="${b64}=" ;;
     esac
-    printf '%s' "$b64" | base64 -d | jq -r .gw
+    printf '%s' "$b64" | base64 -d | jq -r ".${field}"
 }
 
 # ── enrollment ────────────────────────────────────────────────────────
 enroll_and_render() {
     local token="$1"
-    local gw_url
-    gw_url=$(decode_gateway_url "$token")
+    local gw_url namespace
+    gw_url=$(decode_envelope_field "$token" gw)
+    namespace=$(decode_envelope_field "$token" ns)
     [ -n "$gw_url" ] && [ "$gw_url" != "null" ] || fail "no gateway URL in token"
+    [ -n "$namespace" ] && [ "$namespace" != "null" ] || fail "no namespace in token"
 
-    log "decoded gateway URL: $gw_url"
+    log "decoded gateway URL: $gw_url (namespace=$namespace)"
 
     # Keypair — generate once, persist across restarts. The tunnel-state
     # volume in compose ensures the same kit reuses the same key after
@@ -182,6 +184,7 @@ EOF
     }
     _replace_env_var API_GATEWAY_URL "$api_endpoint"
     _replace_env_var BRIDGE_SCOPE_ORGID "$issuing_carrier"
+    _replace_env_var NAMESPACE "$namespace"
     _replace_env_var TUNNEL_HOSTNAME "$client_host"
     _replace_env_var TUNNEL_CLIENT_IP "${client_ip%/*}"
     _replace_env_var BRIDGE_EXTERNAL_URL "http://${client_host}:8090"

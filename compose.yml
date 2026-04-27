@@ -151,8 +151,10 @@ services:
       CADDY_ADMIN_URL: http://caddy:2019
       CADDY_CONTAINER_NAME: corewaf-caddy
       HWINFO_DIR: /workspace/runtime
-      NAMESPACE: default
       HEARTBEAT_INTERVAL_SECONDS: 30
+      # NAMESPACE intentionally NOT set here — comes from
+      # runtime/.env which the tunnel-client populates from the
+      # token envelope's `ns` field after redemption.
     volumes:
       - ./runtime:/workspace/runtime:ro
       - /var/run/docker.sock:/var/run/docker.sock
