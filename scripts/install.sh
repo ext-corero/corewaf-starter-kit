@@ -302,8 +302,33 @@ ui_run "Stage 1: init (privileged — discovery + template render)" \
 ui_run "Stage 2: tunnel (redeem token + bring up wg100)" \
     docker compose up -d --no-deps tunnel
 
+# Tunnel runs FIRST, redeems the token, and overwrites runtime/.env
+# with the real API gateway URL + zero-trust API key from the
+# redemption response. We must NOT let `compose up` re-trigger init in
+# stage 3 (it would re-render runtime/.env from the placeholder values
+# in config.ini, clobbering tunnel's edits). --no-deps prevents that.
+#
+# The flip side: --no-deps also bypasses `caddy-bridge depends_on:
+# tunnel: service_healthy`, so we block here until tunnel is healthy
+# ourselves before bringing the rest up.
+wait_tunnel_healthy() {
+    local deadline=$(( $(date +%s) + 60 ))
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        local status
+        status=$(docker compose ps --format '{{.Health}}' tunnel 2>/dev/null | head -1)
+        case "$status" in
+            healthy) return 0 ;;
+        esac
+        sleep 2
+    done
+    echo "ERROR: tunnel did not become healthy within 60s" >&2
+    docker compose logs --tail=30 tunnel >&2
+    return 1
+}
+ui_run "Waiting for tunnel to become healthy" wait_tunnel_healthy
+
 ui_run "Stage 3: caddy + bridge + alloy + valkey" \
-    docker compose up -d caddy caddy-bridge alloy valkey
+    docker compose up -d --no-deps caddy caddy-bridge alloy valkey
 
 ui_note ""
 ui_note "Stack is up. Tail logs with:"
