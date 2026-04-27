@@ -143,6 +143,16 @@ services:
     image: ghcr.io/ext-corero/waf/caddy-bridge:latest
     container_name: corewaf-bridge
     restart: unless-stopped
+    # Publish 8090 so callers on the host (and via the tunnel — wg100
+    # arrives on this host's lo, then hits the host port binding)
+    # can reach the bridge. The CaddyInstance registration advertises
+    # http://<tunnel-hostname>:8090, which resolves to the kit's
+    # tunnel IP — that IP is local to this host (assigned to wg100),
+    # so the kernel delivers the connection to whatever is listening
+    # on 8090 here. Without this binding, the connection lands on a
+    # closed port.
+    ports:
+      - "8090:8090"
     env_file:
       - ./runtime/.env
     environment:
