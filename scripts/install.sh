@@ -279,6 +279,23 @@ observability_base_url=pending.redemption.local
 api_gateway_url=http://pending.redemption.local
 EOF
 
+# Compose-time .env at the kit root. Holds substitution-only values
+# (NOT runtime values that the bridge reads). Right now: the host's
+# docker group GID, needed so the bridge container can read
+# /var/run/docker.sock for the `restart` / `get-logs` action handlers.
+# Detect from the host; fall back to 999 (typical Debian default).
+DOCKER_GID=$(getent group docker 2>/dev/null | cut -d: -f3 || true)
+if [ -z "${DOCKER_GID}" ]; then
+    ui_note "(docker group not found on host — falling back to GID 999; restart actions may fail)"
+    DOCKER_GID=999
+fi
+
+cat > "${REPO_ROOT}/.env" <<EOF
+# Compose-time variable substitutions. NOT consumed by the running
+# containers — for those, see runtime/.env (rendered by init + tunnel).
+DOCKER_GID=${DOCKER_GID}
+EOF
+
 ui_note "Wrote ${CONFIG_INI}"
 
 # ---------------------------------------------------------------------------

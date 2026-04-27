@@ -153,6 +153,13 @@ services:
     # closed port.
     ports:
       - "8090:8090"
+    # Host's docker group GID. The bridge needs to read /var/run/docker.sock
+    # for the `restart` and `get-logs` action handlers. The bridge user
+    # (uid 1100) is in no extra groups by default; without group_add =
+    # docker GID it gets EACCES on the socket. install.sh detects the
+    # host GID and writes it to .env in the kit root.
+    group_add:
+      - "${DOCKER_GID:-999}"
     env_file:
       - ./runtime/.env
     environment:
