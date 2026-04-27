@@ -157,7 +157,20 @@ services:
       - ./runtime:/workspace/runtime:ro
       - /var/run/docker.sock:/var/run/docker.sock
     networks:
+      # corewaf-internal: reach caddy admin + valkey inside the kit
+      # corewaf-edge:     non-internal, so the bridge can dial the
+      #                   API gateway (whether that's the host's caddy
+      #                   ingress in same-host testing, or the rig's
+      #                   tunnel IP / hostname in production)
       - corewaf-internal
+      - corewaf-edge
+    extra_hosts:
+      # When API_GATEWAY_URL points at corewaf.localhost (same-host
+      # demo against a local rig), make that name resolve to the
+      # docker host's gateway IP so the bridge can actually reach it.
+      # No-op for production deployments where API_GATEWAY_URL is a
+      # real DNS name resolvable inside the container.
+      - "corewaf.localhost:host-gateway"
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:8090/health"]
       interval: 15s
