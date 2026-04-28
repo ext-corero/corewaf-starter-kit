@@ -1,17 +1,16 @@
 #!/usr/bin/env bash
 # CoreWAF Starter Kit — curl-pipe bootstrap.
 #
-# Pipe-to-bash entry point. Verifies the host is ready, fetches the kit
-# (or refreshes a clone), tries to surface a `gum`-styled UI for the rest
-# of the install, then hands off to scripts/install.sh.
+# Verifies prereqs, fetches (or refreshes) the kit, hands off to
+# scripts/install.sh.
 #
 # Usage (process substitution — env stays left of bash, no pipe):
 #   TOKEN=v1.eyJ... bash <(curl -fsSL <bootstrap-url>)
 #
 # Why not `TOKEN=… curl … | bash`? Shell semantics: env-prefix on a
-# pipeline applies only to the FIRST command (curl), not to bash on the
-# right side of the pipe. Process substitution makes `TOKEN=…` apply to
-# bash directly, so install.sh actually sees TOKEN.
+# pipeline applies only to the FIRST command (curl), not to bash on
+# the right side of the pipe. Process substitution makes `TOKEN=…`
+# apply to bash directly, so install.sh actually sees TOKEN.
 #
 # Required:
 #   TOKEN              Provisioning token issued by the operator.
@@ -30,88 +29,33 @@ REPO_URL="${COREWAF_REPO:-https://github.com/ext-corero/corewaf-starter-kit.git}
 REPO_REF="${COREWAF_REF:-main}"
 TARGET_DIR="${COREWAF_DIR:-corewaf-starter-kit}"
 
-# ---------------------------------------------------------------------------
-# Best-effort UI: prefer gum if installed; fall back to plain echo otherwise.
-# install.sh uses the same convention, so the experience stays consistent.
-# ---------------------------------------------------------------------------
-HAS_GUM=0
-if command -v gum >/dev/null 2>&1; then
-    HAS_GUM=1
-fi
+step() { printf '\n── %s ──\n' "$*"; }
+note() { printf '%s\n' "$*"; }
+fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 
-banner() {
-    if [ "${HAS_GUM}" = "1" ]; then
-        gum style --bold --foreground 212 --border rounded --padding "0 1" --margin "1 0" "$1"
-    else
-        printf '\n=== %s ===\n' "$1"
-    fi
-}
+step "CoreWAF Starter Kit — bootstrap"
 
-note() {
-    if [ "${HAS_GUM}" = "1" ]; then
-        gum style --foreground 245 "$1"
-    else
-        printf '%s\n' "$1"
-    fi
-}
-
-run_step() {
-    # $1: title    $2..: command
-    local title="$1"; shift
-    if [ "${HAS_GUM}" = "1" ]; then
-        gum spin --spinner dot --title "${title}" --show-output -- "$@"
-    else
-        printf '… %s\n' "${title}"
-        "$@"
-    fi
-}
-
-fail() {
-    if [ "${HAS_GUM}" = "1" ]; then
-        gum style --foreground 196 --bold "$1" >&2
-    else
-        printf 'ERROR: %s\n' "$1" >&2
-    fi
-    exit 1
-}
-
-# ---------------------------------------------------------------------------
-# Welcome
-# ---------------------------------------------------------------------------
-banner "CoreWAF Starter Kit"
-note "Bootstrap: clone the kit and walk through the installer."
-
-if [ "${HAS_GUM}" = "0" ]; then
-    note ""
-    note "(Tip: install 'gum' for a friendlier UI — https://github.com/charmbracelet/gum)"
-    note ""
-fi
-
-# ---------------------------------------------------------------------------
-# Prereqs
-# ---------------------------------------------------------------------------
+# ── prereqs ───────────────────────────────────────────────────────────
 command -v git >/dev/null 2>&1 || fail "git is required"
 command -v docker >/dev/null 2>&1 || fail "docker is required"
 docker compose version >/dev/null 2>&1 || fail "docker compose plugin (v2) is required"
 
-# ---------------------------------------------------------------------------
-# Fetch the kit
-# ---------------------------------------------------------------------------
+# ── fetch the kit ─────────────────────────────────────────────────────
 if [ -d "${TARGET_DIR}/.git" ]; then
-    note "Refreshing existing clone at ${TARGET_DIR}"
-    run_step "git fetch + checkout ${REPO_REF}" \
-        bash -c "cd '${TARGET_DIR}' && git fetch --quiet origin '${REPO_REF}' && git checkout --quiet '${REPO_REF}' && git pull --quiet --ff-only origin '${REPO_REF}'"
+    note "Refreshing existing clone at ${TARGET_DIR} (ref=${REPO_REF})"
+    cd "${TARGET_DIR}"
+    git fetch --quiet origin "${REPO_REF}"
+    git checkout --quiet "${REPO_REF}"
+    git pull --quiet --ff-only origin "${REPO_REF}"
+    cd - >/dev/null
 elif [ -e "${TARGET_DIR}" ]; then
     fail "${TARGET_DIR} exists but isn't a git checkout. Move it aside or set COREWAF_DIR."
 else
-    run_step "Cloning ${REPO_URL} → ${TARGET_DIR}" \
-        git clone --quiet --branch "${REPO_REF}" --single-branch "${REPO_URL}" "${TARGET_DIR}"
+    note "Cloning ${REPO_URL} → ${TARGET_DIR} (ref=${REPO_REF})"
+    git clone --quiet --branch "${REPO_REF}" --single-branch "${REPO_URL}" "${TARGET_DIR}"
 fi
 
-# ---------------------------------------------------------------------------
-# Hand off to the installer
-# ---------------------------------------------------------------------------
-banner "Running installer"
+# ── hand off to the installer ─────────────────────────────────────────
 cd "${TARGET_DIR}"
 
 INSTALL_ARGS=()
