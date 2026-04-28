@@ -142,7 +142,19 @@ enroll_and_render() {
         allowed_ips="$TUNNEL_ALLOWED_IPS"
     fi
 
-    [ "$server_pubkey" != "null" ] || fail "redemption response had no tunnelConfig.serverPubkey"
+    # Reject both jq's "null" (key missing / value null) AND the empty
+    # string (key present but value empty) — either would write a
+    # broken `PublicKey=` line that wg-quick parses as "Line
+    # unrecognized: PublicKey=" on the next start.
+    case "$server_pubkey" in
+        ""|null) fail "redemption response had no tunnelConfig.serverPubkey — rig may be misconfigured" ;;
+    esac
+    case "$server_endpoint" in
+        ""|null) fail "redemption response had no tunnelConfig.serverEndpoint" ;;
+    esac
+    case "$client_ip" in
+        ""|null) fail "redemption response had no tunnelConfig.clientIP" ;;
+    esac
 
     # Write the WG config.
     log "writing $WG_CONF (interface=$WG_INTERFACE, clientIP=$client_ip, hostname=$client_host)"
