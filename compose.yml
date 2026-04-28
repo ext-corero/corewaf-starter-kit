@@ -140,7 +140,13 @@ services:
     logging: *x-default-logging
 
   caddy-bridge:
-    image: ghcr.io/ext-corero/waf/caddy-bridge:latest
+    # Pinned to :tunnel-v0 (NOT :latest) — this branch needs the
+    # PATCH-on-409 fix in waf-caddy-bridge/feature/tunnel-v0 that
+    # refreshes spec.host on re-registration. The :latest tag on GHCR
+    # tracks main and won't have the fix until that branch merges.
+    # Promote :tunnel-v0 → :latest at merge time via the bridge repo's
+    # `promote` workflow_dispatch.
+    image: ghcr.io/ext-corero/waf/caddy-bridge:tunnel-v0
     container_name: corewaf-bridge
     restart: unless-stopped
     # Publish 8090 so callers on the host (and via the tunnel — wg100
