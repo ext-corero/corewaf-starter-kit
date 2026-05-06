@@ -5,7 +5,7 @@
     "description": "Phase 2 bridge stack — caddy-internal (docker-label proxy + ACME), caddy-bridge (operator action listener), alloy (telemetry), valkey (state). Launched by `orchestrator compose up` from the foundation tier (waf/corewaf-starter-kit/compose.yml's `orchestrator` service) once `tunnel` is healthy.",
     "sources": {
       "ghcr.io/ext-corero/waf/caddy-bridge": "tunnel-v0",
-      "lucaslorentz/caddy-docker-proxy": "2-alpine",
+      "ghcr.io/ext-corero/services/core/caddy-docker-proxy": "1.0.0",
       "grafana/alloy": "v1.7.5",
       "valkey/valkey": "8"
     },
@@ -16,8 +16,7 @@
     ],
     "variables": {
       "CADDY_BRIDGE_IMAGE": "ghcr.io/ext-corero/waf/caddy-bridge:tunnel-v0",
-      "_CADDY_INTERNAL_TODO_": "Stand-in. The corewaf services/core build of caddy-docker-proxy lives only in GitLab today; switch back to ghcr.io/ext-corero/waf/caddy-docker-proxy once services/core ships GHCR publishing.",
-      "CADDY_INTERNAL_IMAGE": "lucaslorentz/caddy-docker-proxy:2.12-alpine",
+      "CADDY_INTERNAL_IMAGE": "ghcr.io/ext-corero/services/core/caddy-docker-proxy:1.0.0",
       "ALLOY_IMAGE": "grafana/alloy:v1.7.5",
       "VALKEY_IMAGE": "valkey/valkey:8",
       "TUNNEL_CONTAINER_NAME": "corewaf-tunnel",
