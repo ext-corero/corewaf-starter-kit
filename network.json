@@ -1,0 +1,11 @@
+{
+  "name": "corewaf-network-loader",
+  "version": "v2.0.0",
+  "_comment": "Network Loader manifest for the kit. Same schema as orchestrator's service.json; consumed both by `network-loader tunnel` (for kit-specific tuning) and by `orchestrator config --manifest` (for schema validation). Phase 1 ships with empty optional sections; Phase 2 will populate the bridge-stack composition.",
+  "files": [],
+  "env": {
+    "tunnel_interface": "wg100",
+    "tunnel_state_dir": "/var/lib/tunnel",
+    "keepalive_interval_hours": "24"
+  }
+}

@@ -3,35 +3,25 @@
 # Copy this file to `config.ini` and fill in the provisioning token, or
 # run `./scripts/install.sh` for a guided TUI that writes it for you.
 #
-# Tunnel-v0: a single token now carries everything. The kit POSTs it to
-# the backend on first boot and gets back the api gateway URL, the
-# observability endpoints, the zero-trust API key, and the WireGuard
-# tunnel config — all in one redemption call. No more entering URLs by
-# hand.
+# Tunnel v2: a single self-locating token carries everything. The kit
+# decodes the gateway URL from the token, redeems against /redeem, and
+# receives the full provisioning package (tunnel config, mTLS cert,
+# zero-trust secret, observability endpoints, namespace, firewall
+# allowlist) in one round trip. No more entering URLs by hand.
 
 # === Required ===
 
-# Provisioning token issued by the operator. Self-locating: the gateway
-# URL is encoded inside it, so the kit knows where to redeem without a
-# separate `api_gateway_url` field. Single-use; tokens issued for one
-# install can't be reused.
+# Provisioning token issued by the operator. Self-locating: the
+# gateway URL is encoded inside the envelope, so the kit knows where
+# to redeem without a separate `gateway_url` field. Single-use;
+# tokens issued for one install can't be reused.
 #
 # Example: v1.eyJleHAiOjE3MDA...K9.MEUCIQ...
 provisioning_token=
 
 # === Optional ===
 
-# Free-form comment attached to this instance at registration. Shown in
-# the operator GUI alongside the instance — useful for "rack 4, slot 7"
-# or "demo for ACME on 2026-04-25" style notes.
+# Free-form comment attached to this instance for diagnostics. Shown
+# in the operator GUI alongside the instance — useful for
+# "rack 4, slot 7" or "demo for ACME on 2026-04-25" style notes.
 instance_comment=
-
-# Override Caddy admin port if 2019 conflicts on your host.
-# caddy_admin_port=2019
-
-# === Reserved (do not edit) ===
-# Populated by stage 1 (instance-init):
-#   machine_id, hardware_fingerprint, hostname, instance_name
-# Populated by stage 1.5 (tunnel-client) from the redemption response:
-#   api_gateway_url, observability_base_url, org_scope_id (=> issuingCarrier)
-# Anything you set here for these keys will be overwritten.

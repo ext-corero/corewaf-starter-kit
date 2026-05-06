@@ -1,17 +1,26 @@
 ---
-# CoreWAF Starter Kit — the customer's docker compose stack.
+# CoreWAF Starter Kit — customer-facing docker compose stack.
 #
-# Boot sequence:
+# v2 boot sequence (foundation tier only; bridge stack and WAF stack
+# are launched recursively once the orchestrator handoff is wired in
+# Phase 2):
 #
-#   1. instance-init — privileged, one-shot. Probes the host (machine_id,
-#                      hardware fingerprint, instance UUID, perf envelope),
-#                      validates prereqs, renders the runtime configs from
-#                      its bundled templates + your config.ini, exits.
-#   2. caddy + caddy-bridge — long-running. Caddy boots in pre-provisioning
-#                      mode; the bridge registers with the CoreWAF backend
-#                      and waits to be provisioned.
-#   3. alloy + valkey  — long-running, parallel. Telemetry begins flowing
-#                      immediately, regardless of provisioning state.
+#   1. init  — privileged, one-shot. Network Loader image in `init`
+#              mode probes the host (machine-id, hardware fingerprint,
+#              deterministic UUIDv5 instance name) via the orchestrator
+#              binary's `discover` verb. Writes discovery.json to the
+#              tunnel-state volume, exits.
+#   2. tunnel — long-lived. Network Loader image in `tunnel` mode.
+#              Decodes the homing-token envelope, generates and
+#              TPM-binds the kit's mTLS keypair via PKCS#11, generates
+#              the WG keypair, redeems against the gateway, persists
+#              the provisioning package + credentials at the handoff-
+#              contract paths, brings up wg100 inside its own netns,
+#              and runs the two-stage healthcheck plus daily /keepalive.
+#   3. caddy + caddy-bridge + alloy + valkey — long-running, kept on
+#              v0 shape until Phase 2 wires the orchestrator handoff
+#              that launches them recursively from the bridge-stack
+#              manifest.
 
 x-logging: &x-default-logging
   driver: "json-file"
@@ -26,71 +35,115 @@ networks:
   corewaf-internal:
     driver: bridge
     internal: true
+  # kit-admin: shared between the foundation tunnel container and
+  # the Phase 2 bridge stack (caddy-internal, caddy-bridge, alloy
+  # all join the tunnel netns; valkey + future caddy-waf attach
+  # to kit-admin directly). The tunnel container holds a NIC on
+  # kit-admin so the netns-sharers can reach kit-admin services
+  # via that NIC. Explicit `name:` so docker compose doesn't
+  # project-prefix it; the bridge-stack compose references it by
+  # bare name as `external: true`.
+  kit-admin:
+    driver: bridge
+    name: kit-admin
 
 volumes:
-  caddy_data:
-  caddy_config:
-  caddy_logs:       # caddy access + coraza logs, read by alloy
-  alloy_data:
-  valkey_data:
-  tunnel_state:     # WG keypair + redemption state. Survives
-                    # `compose down`; `compose down -v` wipes it and
-                    # forces fresh redemption (requires a new token).
+  # tunnel_state — WG keypair, /redeem package, mTLS cert, ZTK
+  # secret. Explicit `name:` so docker compose doesn't project-
+  # prefix it; the bridge-stack compose mounts it as external by
+  # the bare name. Survives `compose down`; `compose down -v`
+  # wipes it and forces fresh redemption (requires new token).
+  tunnel_state:
+    name: tunnel_state
 
 services:
 
   # ------------------------------------------------------------------
-  # Stage 1 — Privileged init (host probe + template render)
+  # Stage 1 — Host probe (Network Loader, init mode)
   # ------------------------------------------------------------------
+  # Runs `network-loader init`, which is a thin wrapper around the
+  # orchestrator binary's `discover` verb. Writes /var/lib/tunnel/
+  # discovery.json atomically (machine-id, hardware fingerprint,
+  # deterministic UUIDv5 instance name) for the tunnel container to
+  # read on the next boot.
   init:
-    image: ghcr.io/ext-corero/waf/instance-init:latest
+    image: ghcr.io/ext-corero/waf/network-loader:0.1.0
     container_name: corewaf-init
+    command: ["init", "--output", "/var/lib/tunnel/discovery.json"]
+    # init is the ONLY container in the kit that runs privileged
+    # with host access. It probes the host (machine_id, hardware
+    # fingerprint, network interfaces, kernel + CPU/memory) once,
+    # writes /var/lib/tunnel/discovery.json, exits. Subsequent
+    # containers (tunnel, orchestrator, bridge) drop to NET_ADMIN-
+    # over-own-netns and consume the file. The privilege boundary
+    # is intentional — host probes need root, the tunnel lifecycle
+    # does not.
     privileged: true
     pid: host
     network_mode: host
     volumes:
       - ./:/workspace
+      - tunnel_state:/var/lib/tunnel
+      # /host_proc and /host_sys: orchestrator's discovery package
+      # detects these mounts (DefaultPaths in
+      # orchestrator/internal/discovery/paths.go) and reads them
+      # in preference to the container-local /proc + /sys, which
+      # would otherwise reflect the container's view, not the host.
+      - /proc:/host_proc:ro
+      - /sys:/host_sys:ro
+      # Identity sources read directly:
       - /sys/class/dmi/id:/sys/class/dmi/id:ro
       - /etc/machine-id:/etc/machine-id:ro
+      - /var/lib/dbus/machine-id:/var/lib/dbus/machine-id:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
     restart: "no"
     logging: *x-default-logging
 
   # ------------------------------------------------------------------
-  # Stage 1.5 — WireGuard tunnel (feature/tunnel-v0)
+  # Stage 1.5 — WireGuard tunnel (Network Loader, tunnel mode)
   # ------------------------------------------------------------------
-  # Redeems the provisioning_token in config.ini for a tunnel config,
-  # brings up wg0 in the host network namespace, and merges the
-  # bridge's runtime credentials (apiEndpoint, zeroTrustApiKey, …)
-  # into runtime/.env. Other long-running services depend on this via
-  # service_healthy so they don't start with an unconfigured backend.
+  # Decodes config.ini's provisioning_token, generates and TPM-binds
+  # the kit's mTLS keypair via PKCS#11, generates the WG keypair,
+  # redeems against the operator gateway, persists artifacts at
+  # /var/lib/tunnel/{package.json, secret/ztk, mtls/cert.pem,
+  # mtls/pkcs11-uri, wg/private.key, wg/wg100.conf}, brings up wg100
+  # inside this container's own netns, applies the kit-side firewall
+  # ruleset from the gateway's firewallRules, and runs the two-stage
+  # healthcheck plus daily /keepalive cron.
+  #
+  # Phase 2 will add an `orchestrator` service that depends on this
+  # being healthy and launches the bridge stack via docker socket.
   tunnel:
-    build:
-      context: ./tunnel-client
-      dockerfile: Dockerfile
-    image: ghcr.io/ext-corero/waf/tunnel-client:latest
+    image: ghcr.io/ext-corero/waf/network-loader:0.1.0
     container_name: corewaf-tunnel
+    command: ["tunnel"]
     restart: unless-stopped
-    network_mode: host                             # wg100 lives on host kernel
     cap_add:
       - NET_ADMIN
       - SYS_MODULE
-    # sysctls don't work with network_mode: host; ip_forward is already
-    # set on most hosts that run docker.
-    environment:
-      # Distinct interface so the kit can coexist with the rig's wg0
-      # on the same host for end-to-end testing. Override per-deployment.
-      WG_INTERFACE: wg100
-      # Same-host testing override: narrow the route added by wg-quick
-      # to just the server (avoids colliding with the rig's
-      # `100.64.0.0/16 dev wg0`). Comment out for two-host deploys.
-      TUNNEL_ALLOWED_IPS: 100.64.0.1/32
+    networks:
+      # kit-admin attachment lets the bridge-stack containers (which
+      # share this container's netns via `network_mode: container:`)
+      # reach kit-admin services (valkey, eventually caddy-waf)
+      # through the NIC they inherit from us.
+      - kit-admin
+    devices:
+      # TPM device for the PKCS#11/TPM-bound mTLS keypair. Soft-TPM
+      # (swtpm) substrate in the multi-VM fixture exposes /dev/tpm0
+      # the same way; hardware path uses /dev/tpmrm0 on modern
+      # kernels. Both are listed so the container picks whichever
+      # the host provides.
+      - /dev/tpmrm0:/dev/tpmrm0
+      - /dev/tpm0:/dev/tpm0
     volumes:
-      - ./:/workspace                              # config.ini + runtime/.env
-      - tunnel_state:/var/lib/tunnel               # keypair + state.json
+      - ./:/workspace                              # config.ini + network.json + kit-version.json
+      - tunnel_state:/var/lib/tunnel               # keypair + package.json + mtls + ztk
       - /lib/modules:/lib/modules:ro               # WG kernel module access
     healthcheck:
-      test: ["CMD", "/opt/tunnel-client/healthcheck.sh"]
+      # network-loader writes /var/lib/tunnel/.healthy after the
+      # foundation-tier bring-up succeeds. Compose's `service_healthy`
+      # gate uses this file's existence as the readiness signal.
+      test: ["CMD", "test", "-f", "/var/lib/tunnel/.healthy"]
       interval: 15s
       timeout: 5s
       retries: 4
@@ -101,11 +154,73 @@ services:
     logging: *x-default-logging
 
   # ------------------------------------------------------------------
-  # Stage 2 — Caddy + Bridge (long-running, waits for backend provisioning)
+  # Stage 2 — Orchestrator handoff to the bridge stack
+  # ------------------------------------------------------------------
+  # Once the tunnel is healthy, run the orchestrator binary's
+  # `compose up` against the bridge-stack manifest. This:
+  #   - reads /etc/bootstrap (rendered by network-loader's tunnel
+  #     mode from the /redeem package)
+  #   - expands ${VAR} in manifests/bridge-stack/compose.yml
+  #   - launches caddy-internal, caddy-bridge, alloy, valkey
+  #
+  # Uses the network-loader image as a strict superset of the
+  # orchestrator base — the orchestrator binary is at
+  # /usr/local/bin/orchestrator inside both. We override the
+  # entrypoint to bypass network-loader's CLI dispatch.
+  orchestrator:
+    image: ghcr.io/ext-corero/waf/network-loader:0.1.0
+    container_name: corewaf-orchestrator
+    entrypoint: ["/usr/local/bin/orchestrator"]
+    # ${PWD} is the host's compose project directory (the kit repo).
+    # We bind-mount it at the SAME path inside the orchestrator
+    # container so relative paths in the bridge-stack compose
+    # (./runtime/config.alloy etc.) resolve to the same host
+    # filesystem location both inside the orchestrator and on the
+    # host's docker daemon. Without this, the orchestrator renders
+    # to /workspace/... and the daemon tries to bind-mount that
+    # nonexistent path on the host (classic docker-socket sharing
+    # gotcha).
+    command:
+      - compose
+      - up
+      - --service-dir=${PWD}/manifests/bridge-stack
+      - --manifest=${PWD}/manifests/bridge-stack/service.json
+      - --bootstrap=/var/lib/tunnel/bootstrap
+    volumes:
+      - ${PWD}:${PWD}
+      - tunnel_state:/var/lib/tunnel:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      tunnel:
+        condition: service_healthy
+    restart: "no"
+    logging: *x-default-logging
+
+  # ------------------------------------------------------------------
+  # Stage 2 / 3 (legacy) — Bridge stack + Caddy-WAF
+  #
+  # In Phase 1 these services are inert: they're attached to the
+  # `legacy` profile, so `docker compose up` (no profile) brings up
+  # only the foundation tier (init + tunnel). Phase 2 adds an
+  # `orchestrator` service that launches the bridge stack via docker
+  # socket from a manifest, at which point these compose entries are
+  # removed.
+  #
+  # Customers transitioning a v0 install can opt into the legacy
+  # bridge stack with:
+  #
+  #     docker compose --profile legacy up -d
+  #
+  # but the v0 stack expects ./runtime/.env (populated by the v0
+  # tunnel-client). Phase 1's network-loader writes /etc/bootstrap
+  # and /var/lib/tunnel/* instead, so the legacy stack does NOT
+  # function end-to-end on a Phase 1 kit. Use --profile legacy for
+  # comparison/diagnostics only until Phase 2 lands.
   # ------------------------------------------------------------------
   caddy:
     image: ghcr.io/ext-corero/waf/caddy-waf:latest
     container_name: corewaf-caddy
+    profiles: [legacy]
     restart: unless-stopped
     cap_add:
       - NET_ADMIN
@@ -148,6 +263,7 @@ services:
     # `promote` workflow_dispatch.
     image: ghcr.io/ext-corero/waf/caddy-bridge:tunnel-v0
     container_name: corewaf-bridge
+    profiles: [legacy]
     restart: unless-stopped
     # Publish 8090 so callers on the host (and via the tunnel — wg100
     # arrives on this host's lo, then hits the host port binding)
@@ -217,6 +333,7 @@ services:
   alloy:
     image: grafana/alloy:v1.7.5
     container_name: corewaf-alloy
+    profiles: [legacy]
     restart: unless-stopped
     command:
       - run
@@ -239,6 +356,7 @@ services:
   valkey:
     image: valkey/valkey:8
     container_name: corewaf-valkey
+    profiles: [legacy]
     restart: unless-stopped
     command: valkey-server --maxmemory 128mb --appendonly no
     volumes:

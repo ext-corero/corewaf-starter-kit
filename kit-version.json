@@ -1,0 +1,12 @@
+{
+  "version": "v2.0.0",
+  "_comment": "Operator-pinned image-digest manifest for /redeem. Same shape as ApprovedKitVersion.spec.imageDigests on the gateway side. The fixture's seed-etcd.py default places these exact placeholder digests in etcd, so a real-kit smoke test against the multi-VM fixture passes /redeem's digest match. Real production digests will replace these once W7 (integrity baseline) lands.",
+  "imageDigests": {
+    "networkLoader": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "bridgeRuntime": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "alloy":         "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "caddyInternal": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "valkey":        "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "caddyWaf":      "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+  }
+}

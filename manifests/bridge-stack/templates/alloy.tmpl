@@ -1,0 +1,48 @@
+// Alloy config rendered by orchestrator at Phase 2 bring-up.
+//
+// Operator-side sink endpoints come from /etc/bootstrap (which
+// network-loader populates from the /redeem package). Per-target
+// scrape config eventually moves to docker labels via alloy's
+// `discovery.docker` component — for Phase 2 we ship a static
+// config that just opens the sinks.
+//
+// Until the gateway populates loki_url / mimir_url / otel_url in
+// /redeem (tracked separately), these expand to empty strings and
+// the corresponding components stay disabled at runtime.
+
+logging {
+	level  = "info"
+	format = "logfmt"
+}
+
+prometheus.exporter.self "alloy" {}
+
+prometheus.scrape "alloy" {
+	targets    = prometheus.exporter.self.alloy.targets
+	forward_to = []
+}
+
+// Loki sink — populated from /reconnect's endpoints.logs.
+// Empty endpoint => alloy logs the missing config and continues
+// rather than crash, so the bridge stack stays up while the
+// observability wiring catches up.
+loki.write "default" {
+	endpoint {
+		url = "{{ .Env.loki_url }}"
+	}
+}
+
+// Mimir sink — same pattern; sourced from endpoints.metrics.
+prometheus.remote_write "default" {
+	endpoint {
+		url = "{{ .Env.mimir_url }}"
+	}
+}
+
+// OTEL collector sink — sourced from endpoints.top. Used for
+// traces; activated once the kit emits traces.
+otelcol.exporter.otlphttp "default" {
+	client {
+		endpoint = "{{ .Env.otel_url }}"
+	}
+}

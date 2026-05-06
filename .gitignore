@@ -1,8 +1,11 @@
 # Customer-supplied configuration (never committed)
 config.ini
 
-# Rendered runtime artifacts (output of the templates stage)
-runtime/
+# Rendered runtime artifacts (output of the templates stage).
+# Bundled files (operator-ca.crt, README.md) are explicitly tracked.
+runtime/*
+!runtime/operator-ca.crt
+!runtime/README.md
 .runtime/
 
 # Local Docker / orchestrator state

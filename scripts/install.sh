@@ -1,13 +1,20 @@
 #!/usr/bin/env bash
 # CoreWAF Starter Kit — installer.
 #
-# v0 (feature/tunnel-v0): the kit is token-driven. The customer pastes
-# (or env-supplies) a single self-locating provisioning_token; the rest
-# — api gateway URL, observability endpoints, zero-trust API key, WG
-# tunnel config — arrives on first boot via the redemption response.
+# v2 Phase 1 (foundation tier only): the kit is token-driven. The
+# customer pastes (or env-supplies) a single self-locating
+# provisioning_token; the kit's tunnel mode decodes the gateway URL
+# from the envelope, generates and TPM-binds the kit's mTLS keypair
+# via PKCS#11, redeems against the gateway, and persists everything
+# the bridge stack will eventually need at the handoff-contract paths
+# under /var/lib/tunnel.
 #
-# Plain bash + plain stdout. No TUI dependency, no spinners eating
-# subprocess stderr.
+# Phase 1's compose runs only `init` and `tunnel`. The bridge stack
+# (caddy, caddy-bridge, alloy, valkey) is gated behind the `legacy`
+# profile and remains v0-shaped until Phase 2 wires the orchestrator
+# handoff that launches it from a manifest. The legacy profile is
+# offered for diagnostics; it does NOT function end-to-end on a
+# Phase 1 kit because runtime/.env is no longer populated.
 
 set -euo pipefail
 
@@ -17,16 +24,27 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 CONFIG_INI="${REPO_ROOT}/config.ini"
 
 DO_UP=1
+WITH_LEGACY=0
 for arg in "$@"; do
     case "$arg" in
         --no-up) DO_UP=0 ;;
+        --with-legacy) WITH_LEGACY=1 ;;
         -h|--help)
             cat <<EOF
-Usage: ./scripts/install.sh [--no-up]
+Usage: ./scripts/install.sh [--no-up] [--with-legacy]
 
 Writes config.ini (one prompt: the provisioning token, unless TOKEN
-env is already set), then runs 'docker compose up -d' through three
-stages (init, tunnel, services). --no-up writes config and stops.
+env is already set), then runs 'docker compose up -d' to bring the
+foundation tier (init + tunnel) online.
+
+  --no-up         Write config and stop. When ready:
+                  cd '${REPO_ROOT}' && docker compose up -d
+
+  --with-legacy   Also bring up the v0 bridge stack
+                  (caddy + caddy-bridge + alloy + valkey) via the
+                  'legacy' compose profile. Does NOT function
+                  end-to-end on a Phase 1 kit; intended for
+                  diagnostics during the v2 transition.
 
 Env vars:
   TOKEN              Provisioning token (alias: COREWAF_TOKEN). Skips
@@ -43,7 +61,7 @@ note() { printf '%s\n' "$*"; }
 fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 
 # ── preflight ─────────────────────────────────────────────────────────
-step "CoreWAF Starter Kit — installer"
+step "CoreWAF Starter Kit — installer (v2 Phase 1)"
 
 command -v docker >/dev/null 2>&1 || fail "docker is required but not on PATH"
 docker compose version >/dev/null 2>&1 || fail "'docker compose' plugin is required (compose v2)"
@@ -76,13 +94,15 @@ while [ -z "${PROVISIONING_TOKEN}" ]; do
     [ -z "${PROVISIONING_TOKEN}" ] && note "Token is required."
 done
 
-# Validate envelope shape regardless of whether it came from prompt or env.
+# Sanity-check token shape: three dot-separated segments (JWS).
+# network-loader does the full decode + validation; this is just a
+# fast-fail for obvious typos at the installer level.
 case "${PROVISIONING_TOKEN}" in
-    v1.*.*) ;;
-    *) fail "TOKEN doesn't look like a v1 envelope (v1.<payload>.<sig>)" ;;
+    *.*.*) ;;
+    *) fail "TOKEN doesn't look like a JWS envelope (<header>.<payload>.<sig>)" ;;
 esac
 
-# ── write config.ini + compose-time .env ──────────────────────────────
+# ── write config.ini ──────────────────────────────────────────────────
 step "Writing ${CONFIG_INI}"
 
 if [ -f "${CONFIG_INI}" ]; then
@@ -95,33 +115,9 @@ cat > "${CONFIG_INI}" <<EOF
 
 provisioning_token=${PROVISIONING_TOKEN}
 instance_comment=${INSTANCE_COMMENT}
-
-# v0 transitional placeholders — the instance-init image still
-# validates these as non-empty. Real values arrive in the redemption
-# response and the tunnel-client writes them into runtime/.env after
-# init completes. Drop once instance-init is updated to v0.
-org_scope_id=pending-redemption
-observability_base_url=pending.redemption.local
-api_gateway_url=http://pending.redemption.local
 EOF
 
-# Compose-time .env at the kit root. Holds substitution values
-# (NOT runtime env). Today: the host's docker group GID, so the
-# bridge container can read /var/run/docker.sock for restart /
-# get-logs action handlers.
-DOCKER_GID="$(getent group docker 2>/dev/null | cut -d: -f3 || true)"
-if [ -z "${DOCKER_GID}" ]; then
-    note "(docker group not found on host — falling back to GID 999; restart actions may fail)"
-    DOCKER_GID=999
-fi
-
-cat > "${REPO_ROOT}/.env" <<EOF
-# Compose-time variable substitutions. Not consumed by running
-# containers (those read runtime/.env, rendered by init + tunnel).
-DOCKER_GID=${DOCKER_GID}
-EOF
-
-note "Wrote config.ini and .env (DOCKER_GID=${DOCKER_GID})."
+note "Wrote config.ini."
 
 # ── bring up the stack ────────────────────────────────────────────────
 if [ "${DO_UP}" = "0" ]; then
@@ -131,26 +127,14 @@ fi
 
 cd "${REPO_ROOT}"
 
-# Compose evaluates env_file at container CREATE time, not start time,
-# so we run init separately first (renders runtime/.env from config.ini
-# + discovery). Tunnel then redeems the token and OVERWRITES runtime/.env
-# with the real values before caddy-bridge is created.
-mkdir -p runtime
-[ -f runtime/.env ] || : > runtime/.env
-
-step "Stage 1: init (privileged — discovery + template render)"
+step "Stage 1: init (host probe → /var/lib/tunnel/discovery.json)"
 docker compose run --rm init
 
-step "Stage 2: tunnel (redeem token + bring up wg100)"
-docker compose up -d --no-deps tunnel
+step "Stage 2: tunnel (decode token → keys → /redeem → wg100 up → keepalive loop)"
+docker compose up -d tunnel
 
-# We must NOT let stage 3 (`compose up caddy …`) re-trigger init —
-# that would re-render runtime/.env from the placeholder config.ini
-# values and clobber what the tunnel just wrote. --no-deps in stage 3
-# avoids that, but it also bypasses caddy-bridge's dependency on
-# tunnel: service_healthy, so we wait here ourselves.
 note "Waiting for tunnel to become healthy ..."
-_deadline=$(( $(date +%s) + 60 ))
+_deadline=$(( $(date +%s) + 90 ))
 _status=
 while [ "$(date +%s)" -lt "${_deadline}" ]; do
     _status="$(docker compose ps --format '{{.Health}}' tunnel 2>/dev/null | head -1)"
@@ -158,21 +142,25 @@ while [ "$(date +%s)" -lt "${_deadline}" ]; do
     sleep 2
 done
 if [ "${_status}" != "healthy" ]; then
-    echo "ERROR: tunnel did not become healthy within 60s" >&2
-    docker compose logs --tail=30 tunnel >&2
+    echo "ERROR: tunnel did not become healthy within 90s" >&2
+    docker compose logs --tail=50 tunnel >&2
     exit 1
 fi
-note "Tunnel healthy."
+note "Tunnel healthy. Foundation tier is up."
 
-step "Stage 3: caddy + bridge + alloy + valkey"
-docker compose up -d --no-deps caddy caddy-bridge alloy valkey
+if [ "${WITH_LEGACY}" = "1" ]; then
+    step "Stage 3 (legacy diagnostics): caddy + bridge + alloy + valkey"
+    note "WARNING: the legacy bridge stack is not wired against the v2 tunnel."
+    note "         These containers will likely fail without runtime/.env."
+    docker compose --profile legacy up -d --no-deps caddy caddy-bridge alloy valkey || true
+fi
 
 cat <<EOF
 
-Stack is up. Tail logs with:
-  docker compose logs -f tunnel        # WG bring-up + redemption
-  docker compose logs -f caddy-bridge  # bridge registration
+Foundation tier is up. Tail logs with:
+  docker compose logs -f tunnel        # /redeem flow + WG bring-up + keepalive
 
-Caddy waits for the CoreWAF backend to provision it before serving traffic;
-telemetry starts flowing immediately via Alloy.
+The bridge stack (caddy, caddy-bridge, alloy, valkey) does not run
+on Phase 1 by default. Phase 2 will add an 'orchestrator' service
+that launches them via docker socket from a manifest.
 EOF
