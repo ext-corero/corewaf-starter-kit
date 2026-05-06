@@ -84,6 +84,15 @@ services:
       # netns owns one set of attachments, kit-admin another).
       CADDY_DOCKER_MODE: standalone
       CADDY_DOCKER_LABEL_PREFIX: caddy
+    labels:
+      # Alloy's discovery.docker picks these up via
+      # __meta_docker_container_label_* and turns this container
+      # into a metrics + logs target. See manifests/bridge-stack/
+      # templates/alloy.tmpl for the relabel rules.
+      prometheus.io/scrape: "true"
+      prometheus.io/port: "2019"
+      prometheus.io/path: /metrics
+      loki.io/scrape: "true"
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:2019"]
       interval: 15s
@@ -128,6 +137,12 @@ services:
       # caddy-internal admin path to this container.
       caddy: bridge.internal
       caddy.reverse_proxy: "{{ upstreams 8090 }}"
+      # Alloy docker-label discovery (see alloy.tmpl). caddy-bridge
+      # exposes /metrics on its service port.
+      prometheus.io/scrape: "true"
+      prometheus.io/port: "8090"
+      prometheus.io/path: /metrics
+      loki.io/scrape: "true"
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8090/health"]
       interval: 15s
