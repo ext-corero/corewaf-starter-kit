@@ -1,6 +1,25 @@
 ---
 # CoreWAF Starter Kit — customer-facing docker compose stack.
 #
+# MOUNT_DIR convention
+# --------------------
+# Every workspace bind mount in this stack uses ``${MOUNT_DIR:-${PWD}}``
+# as its source. Operators normally don't set MOUNT_DIR — the default
+# (``${PWD}``) makes the source the directory ``docker compose`` was
+# launched from (i.e. the kit repo). Operators who run the kit out of
+# a non-standard location can export MOUNT_DIR before invoking
+# install.sh / compose to override it.
+#
+# The orchestrator service additionally mounts the workspace at the
+# *same path* inside its container that the host sees on the outside
+# (``${MOUNT_DIR}:${MOUNT_DIR}``). This is the alignment that lets the
+# orchestrator's nested ``docker compose up`` calls pass relative
+# bind-mount sources through to the host docker daemon without path
+# translation — the orchestrator's view and the daemon's view of any
+# given file path are identical by construction. Init and tunnel
+# don't trigger nested bind mounts, so they can keep mounting at the
+# legacy ``/workspace`` target.
+#
 # v2 boot sequence (foundation tier only; bridge stack and WAF stack
 # are launched recursively once the orchestrator handoff is wired in
 # Phase 2):
@@ -82,7 +101,7 @@ services:
     pid: host
     network_mode: host
     volumes:
-      - ./:/workspace
+      - ${MOUNT_DIR:-${PWD}}:/workspace
       - tunnel_state:/var/lib/tunnel
       # /host_proc and /host_sys: orchestrator's discovery package
       # detects these mounts (DefaultPaths in
@@ -136,7 +155,7 @@ services:
       - /dev/tpmrm0:/dev/tpmrm0
       - /dev/tpm0:/dev/tpm0
     volumes:
-      - ./:/workspace                              # config.ini + network.json + kit-version.json
+      - ${MOUNT_DIR:-${PWD}}:/workspace            # config.ini + network.json + kit-version.json
       - tunnel_state:/var/lib/tunnel               # keypair + package.json + mtls + ztk
       - /lib/modules:/lib/modules:ro               # WG kernel module access
     healthcheck:
@@ -171,23 +190,22 @@ services:
     image: ghcr.io/ext-corero/waf/network-loader:0.1.0
     container_name: corewaf-orchestrator
     entrypoint: ["/usr/local/bin/orchestrator"]
-    # ${PWD} is the host's compose project directory (the kit repo).
-    # We bind-mount it at the SAME path inside the orchestrator
-    # container so relative paths in the bridge-stack compose
-    # (./runtime/config.alloy etc.) resolve to the same host
-    # filesystem location both inside the orchestrator and on the
-    # host's docker daemon. Without this, the orchestrator renders
-    # to /workspace/... and the daemon tries to bind-mount that
-    # nonexistent path on the host (classic docker-socket sharing
-    # gotcha).
+    # MOUNT_DIR convention (see top-of-file comment): we bind-mount
+    # the kit repo at the SAME path inside the orchestrator container
+    # that the host sees on the outside. Relative bind-mount sources
+    # in the bridge-stack compose (./runtime/config.alloy etc.) then
+    # resolve to identical paths on both sides — when the orchestrator
+    # asks the host docker daemon to bind-mount a rendered config,
+    # the path translates trivially because there's nothing to
+    # translate.
     command:
       - compose
       - up
-      - --service-dir=${PWD}/manifests/bridge-stack
-      - --manifest=${PWD}/manifests/bridge-stack/service.json
+      - --service-dir=${MOUNT_DIR:-${PWD}}/manifests/bridge-stack
+      - --manifest=${MOUNT_DIR:-${PWD}}/manifests/bridge-stack/service.json
       - --bootstrap=/var/lib/tunnel/bootstrap
     volumes:
-      - ${PWD}:${PWD}
+      - ${MOUNT_DIR:-${PWD}}:${MOUNT_DIR:-${PWD}}
       - tunnel_state:/var/lib/tunnel:ro
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
