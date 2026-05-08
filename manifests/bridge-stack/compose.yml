@@ -123,8 +123,17 @@ services:
       KIT_VERSION: ${kit_version}
       SERVICE_HOST: 0.0.0.0
       SERVICE_PORT: 8090
-      CADDY_ADMIN_URL: http://127.0.0.1:2019
+      # Bridge resolves caddy-waf via label-based discovery, not a
+      # hard-coded URL — it scans the docker daemon for containers
+      # carrying both `corewaf.io/managed=true` and
+      # `corewaf.io/role=caddy-waf`, then dials that container's name.
+      # caddy-waf runs in a SEPARATE compose ("third stack") on the
+      # kit-admin network; the labels must be set on its compose service
+      # definition. The env fallback below is only used if discovery is
+      # disabled via REQUIRE_CADDY_LABEL=false (legacy mode).
+      # CADDY_ADMIN_URL: http://caddy-waf:2019  # legacy/fallback only
       HEARTBEAT_INTERVAL_SECONDS: 30
+      CADDY_MONITOR_INTERVAL_SECONDS: 60
     volumes:
       # Read tunnel-state artifacts written by network-loader
       # (package, secrets, mTLS cert).

@@ -269,7 +269,16 @@ services:
       valkey:
         condition: service_started
     labels:
+      # caddy-bridge discovers its target by these labels (mirror of
+      # dns-bridge's CoreDNS discovery). `managed=true` qualifies for
+      # bridge management; `role=caddy-waf` discriminates this from
+      # caddy-internal (the docker-proxy router, which also runs the
+      # Caddy binary but is NOT the WAF). `admin-port` is optional —
+      # the bridge defaults to 2019 if absent — but stated explicitly
+      # so a reader sees which port the bridge will dial.
       corewaf.io/managed: "true"
+      corewaf.io/role: "caddy-waf"
+      corewaf.io/admin-port: "2019"
     logging: *x-default-logging
 
   caddy-bridge:
