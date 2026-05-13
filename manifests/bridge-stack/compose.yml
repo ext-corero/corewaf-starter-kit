@@ -121,6 +121,15 @@ services:
       MTLS_PKCS11_URI: ${mtls_pkcs11_uri}
       HW_ID: ${hw_id}
       KIT_VERSION: ${kit_version}
+      # Bridge looks for discovery.json under HWINFO_DIR; the default
+      # is /var/lib/hwinfo (legacy hw-introspect path). Network Loader
+      # (Phase 1) writes it to /var/lib/tunnel/discovery.json, which
+      # this volume already mounts at /var/lib/tunnel below — point
+      # the bridge at the same path so it picks up the real
+      # orchestrator-driven hw facts (instance_name, cluster_id,
+      # machine_id, hardware_fingerprint) instead of falling back to
+      # local introspection inside the netns'd container.
+      HWINFO_DIR: /var/lib/tunnel
       SERVICE_HOST: 0.0.0.0
       SERVICE_PORT: 8090
       # Bridge resolves caddy-waf via label-based discovery, not a
