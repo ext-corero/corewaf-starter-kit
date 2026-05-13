@@ -1,0 +1,141 @@
+// Alloy config rendered by orchestrator at Phase 2 bring-up.
+//
+// Sink endpoints come from /var/lib/tunnel/bootstrap (which the
+// network-loader populates from the gateway's /reconnect response).
+// Discovery is docker-label-driven via the alloy daemon's mount of
+// /var/run/docker.sock — containers opt in by setting:
+//
+//   prometheus.io/scrape: "true"   metrics target
+//   prometheus.io/port:   "<port>" container-internal scrape port
+//   prometheus.io/path:   "/path"  default /metrics
+//   loki.io/scrape:       "true"   stream stdout/stderr to Loki
+//
+// caddy-internal and caddy-bridge are wired with these labels in
+// manifests/bridge-stack/compose.yml. Adding more services to the
+// pipeline is purely a label change — no alloy.tmpl edits needed.
+//
+// Until the gateway populates loki_url / mimir_url / otel_url in
+// /reconnect (Phase 2.5 ships the wire; the operator may still leave
+// these empty), the corresponding sinks render with empty endpoint
+// strings — alloy logs the missing config and the components stay
+// idle rather than crashing.
+
+logging {
+	level  = "info"
+	format = "logfmt"
+}
+
+// --------------------------------------------------------------
+// Discovery — every running container on this docker daemon.
+// Refresh every 30s; opt-in via labels filtered below.
+// --------------------------------------------------------------
+discovery.docker "containers" {
+	host             = "unix:///var/run/docker.sock"
+	refresh_interval = "30s"
+}
+
+// --------------------------------------------------------------
+// Metrics — keep targets where prometheus.io/scrape="true".
+// Promote the port + path labels onto Prometheus' wire shape.
+// --------------------------------------------------------------
+discovery.relabel "metrics" {
+	targets = discovery.docker.containers.targets
+
+	// Keep only containers that opted in.
+	rule {
+		source_labels = ["__meta_docker_container_label_prometheus_io_scrape"]
+		regex         = "true"
+		action        = "keep"
+	}
+
+	// `prometheus.io/port` → rewrite the target's :port. Containers
+	// share the tunnel netns so all ports are reachable on
+	// 127.0.0.1; we synthesize the address here.
+	rule {
+		source_labels = ["__meta_docker_container_label_prometheus_io_port"]
+		target_label  = "__address__"
+		regex         = "(.+)"
+		replacement   = "127.0.0.1:$1"
+	}
+
+	// Optional path override.
+	rule {
+		source_labels = ["__meta_docker_container_label_prometheus_io_path"]
+		target_label  = "__metrics_path__"
+		regex         = "(.+)"
+	}
+
+	// Friendly labels on the wire.
+	rule {
+		source_labels = ["__meta_docker_container_name"]
+		target_label  = "container"
+		// docker prepends "/" to container names; strip it.
+		regex         = "/(.*)"
+		replacement   = "$1"
+	}
+}
+
+prometheus.scrape "kit" {
+	targets         = discovery.relabel.metrics.output
+	scrape_interval = "30s"
+	forward_to      = [prometheus.remote_write.default.receiver]
+}
+
+// Alloy's own self-metrics — always scraped, regardless of labels.
+prometheus.exporter.self "alloy" {}
+
+prometheus.scrape "alloy_self" {
+	targets         = prometheus.exporter.self.alloy.targets
+	scrape_interval = "60s"
+	forward_to      = [prometheus.remote_write.default.receiver]
+}
+
+// --------------------------------------------------------------
+// Logs — keep containers labeled loki.io/scrape="true". Stream
+// stdout/stderr via the docker engine API.
+// --------------------------------------------------------------
+discovery.relabel "logs" {
+	targets = discovery.docker.containers.targets
+
+	rule {
+		source_labels = ["__meta_docker_container_label_loki_io_scrape"]
+		regex         = "true"
+		action        = "keep"
+	}
+	rule {
+		source_labels = ["__meta_docker_container_name"]
+		target_label  = "container"
+		regex         = "/(.*)"
+		replacement   = "$1"
+	}
+}
+
+loki.source.docker "kit" {
+	host       = "unix:///var/run/docker.sock"
+	targets    = discovery.relabel.logs.output
+	forward_to = [loki.write.default.receiver]
+}
+
+// --------------------------------------------------------------
+// Sinks — endpoint URLs come from the bootstrap-rendered env
+// (alloy.tmpl is a Go text/template; orchestrator substitutes
+// from /etc/bootstrap, which is loki_url / mimir_url / otel_url
+// resolved at /reconnect time).
+// --------------------------------------------------------------
+loki.write "default" {
+	endpoint {
+		url = "{{ .Env.loki_url }}"
+	}
+}
+
+prometheus.remote_write "default" {
+	endpoint {
+		url = "{{ .Env.mimir_url }}"
+	}
+}
+
+otelcol.exporter.otlphttp "default" {
+	client {
+		endpoint = "{{ .Env.otel_url }}"
+	}
+}

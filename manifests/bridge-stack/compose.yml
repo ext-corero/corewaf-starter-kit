@@ -1,0 +1,213 @@
+---
+# Phase 2 bridge stack.
+#
+# Topology (kit-v2 §F.2 / §1.13):
+#
+#   - The Network Loader's `tunnel` container owns wg100 + an
+#     attachment on the kit-admin docker network. It's already up
+#     (Phase 1) by the time this compose runs.
+#   - caddy-bridge, alloy, caddy-internal all share the tunnel
+#     container's netns via `network_mode: container:`. They
+#     reach operator services through wg100 and reach kit-admin
+#     containers (valkey, eventually caddy-waf) through the
+#     tunnel container's admin NIC.
+#   - valkey is the only bridge-stack member NOT in the tunnel
+#     netns: it lives on kit-admin so caddy-waf (separate stack)
+#     can reach it without going through the tunnel netns. It
+#     also publishes inside the tunnel netns by binding to the
+#     admin-NIC IP from the tunnel container's perspective.
+#
+# Env vars come from /etc/bootstrap (rendered by network-loader
+# from the /redeem package).  The orchestrator binary expands
+# `${VAR}` references at compose-up time.
+
+x-logging: &x-default-logging
+  driver: "json-file"
+  options:
+    max-size: "100m"
+    max-file: "5"
+    compress: "true"
+
+# kit-admin: created externally (via the manifest's docker.networks).
+# All four volumes are external too — `keep` action in service.json.
+networks:
+  kit-admin:
+    external: true
+    name: kit-admin
+
+volumes:
+  # caddy_data, caddy_config, caddy_logs, alloy_data, valkey_data:
+  # created by the orchestrator at compose-up time per the
+  # bridge-stack manifest's docker.volumes declarations.
+  caddy_data:    { external: true, name: caddy_data }
+  caddy_config:  { external: true, name: caddy_config }
+  caddy_logs:    { external: true, name: caddy_logs }
+  alloy_data:    { external: true, name: alloy_data }
+  valkey_data:   { external: true, name: valkey_data }
+  # tunnel_state: created by the foundation compose
+  # (waf/corewaf-starter-kit/compose.yml) with explicit `name:`
+  # so the cross-project reference here lands on the same volume.
+  # caddy-bridge reads /var/lib/tunnel/{secret/ztk, mtls/cert.pem,
+  # package.json} from this mount.
+  tunnel_state:  { external: true, name: tunnel_state }
+
+services:
+
+  # --------------------------------------------------------------
+  # caddy-internal — corewaf caddy-docker-proxy build.
+  #
+  # All routing config comes from `caddy.*` labels on other
+  # containers (caddy-bridge, valkey, alloy, eventually caddy-waf):
+  # caddy-docker-proxy watches /var/run/docker.sock, sees label
+  # changes, and rewrites the live Caddy admin config (port 2019).
+  # No static Caddyfile; the proxy's defaults plus labels are the
+  # whole story.
+  #
+  # ACME client lives inside Caddy itself — it'll reach step-ca
+  # through the tunnel netns (operator-side via wg100). Cert
+  # storage is on the caddy_data volume so renewals survive
+  # restarts.
+  # --------------------------------------------------------------
+  caddy-internal:
+    image: ${CADDY_INTERNAL_IMAGE}
+    pull_policy: missing
+    container_name: corewaf-caddy-internal
+    restart: unless-stopped
+    network_mode: "container:${TUNNEL_CONTAINER_NAME}"
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      # caddy-docker-proxy controls — make the proxy pick up labels
+      # from any docker network attached to the daemon (the tunnel
+      # netns owns one set of attachments, kit-admin another).
+      CADDY_DOCKER_MODE: standalone
+      CADDY_DOCKER_LABEL_PREFIX: caddy
+    labels:
+      # Alloy's discovery.docker picks these up via
+      # __meta_docker_container_label_* and turns this container
+      # into a metrics + logs target. See manifests/bridge-stack/
+      # templates/alloy.tmpl for the relabel rules.
+      prometheus.io/scrape: "true"
+      prometheus.io/port: "2019"
+      prometheus.io/path: /metrics
+      loki.io/scrape: "true"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:2019"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 30s
+    logging: *x-default-logging
+
+  # --------------------------------------------------------------
+  # caddy-bridge — operator action listener + control-plane channel
+  # --------------------------------------------------------------
+  caddy-bridge:
+    image: ${CADDY_BRIDGE_IMAGE}
+    pull_policy: missing
+    container_name: corewaf-bridge
+    restart: unless-stopped
+    network_mode: "container:${TUNNEL_CONTAINER_NAME}"
+    environment:
+      # Operator-side endpoints come from /etc/bootstrap, expanded
+      # by the orchestrator at compose-up time.
+      API_GATEWAY_URL: ${core_api_gateway_url}
+      NAMESPACE: ${namespace}
+      TUNNEL_CLIENT_IP: ${tunnel_client_ip}
+      ZTK_SECRET_PATH: /var/lib/tunnel/secret/ztk
+      MTLS_CERT_PATH: /var/lib/tunnel/mtls/cert.pem
+      MTLS_PKCS11_URI: ${mtls_pkcs11_uri}
+      HW_ID: ${hw_id}
+      KIT_VERSION: ${kit_version}
+      # Bridge looks for discovery.json under HWINFO_DIR; the default
+      # is /var/lib/hwinfo (legacy hw-introspect path). Network Loader
+      # (Phase 1) writes it to /var/lib/tunnel/discovery.json, which
+      # this volume already mounts at /var/lib/tunnel below — point
+      # the bridge at the same path so it picks up the real
+      # orchestrator-driven hw facts (instance_name, cluster_id,
+      # machine_id, hardware_fingerprint) instead of falling back to
+      # local introspection inside the netns'd container.
+      HWINFO_DIR: /var/lib/tunnel
+      SERVICE_HOST: 0.0.0.0
+      SERVICE_PORT: 8090
+      # Bridge resolves caddy-waf via label-based discovery, not a
+      # hard-coded URL — it scans the docker daemon for containers
+      # carrying both `corewaf.io/managed=true` and
+      # `corewaf.io/role=caddy-waf`, then dials that container's name.
+      # caddy-waf runs in a SEPARATE compose ("third stack") on the
+      # kit-admin network; the labels must be set on its compose service
+      # definition. The env fallback below is only used if discovery is
+      # disabled via REQUIRE_CADDY_LABEL=false (legacy mode).
+      # CADDY_ADMIN_URL: http://caddy-waf:2019  # legacy/fallback only
+      HEARTBEAT_INTERVAL_SECONDS: 30
+      CADDY_MONITOR_INTERVAL_SECONDS: 60
+    volumes:
+      # Read tunnel-state artifacts written by network-loader
+      # (package, secrets, mTLS cert).
+      - tunnel_state:/var/lib/tunnel:ro
+      # Action handlers (`restart`, `get-logs`) talk to the docker
+      # daemon directly.
+      - /var/run/docker.sock:/var/run/docker.sock
+    labels:
+      # caddy-docker-proxy hooks: route bridge-API requests on the
+      # caddy-internal admin path to this container.
+      caddy: bridge.internal
+      caddy.reverse_proxy: "{{ upstreams 8090 }}"
+      # Alloy docker-label discovery (see alloy.tmpl). caddy-bridge
+      # exposes /metrics on its service port.
+      prometheus.io/scrape: "true"
+      prometheus.io/port: "8090"
+      prometheus.io/path: /metrics
+      loki.io/scrape: "true"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8090/health"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    logging: *x-default-logging
+
+  # --------------------------------------------------------------
+  # alloy — telemetry shipper (Loki / Mimir / OTEL)
+  # --------------------------------------------------------------
+  alloy:
+    image: ${ALLOY_IMAGE}
+    pull_policy: missing
+    container_name: corewaf-alloy
+    restart: unless-stopped
+    network_mode: "container:${TUNNEL_CONTAINER_NAME}"
+    command:
+      - run
+      - --server.http.listen-addr=0.0.0.0:12345
+      - --storage.path=/var/lib/alloy/data
+      - --disable-reporting
+      - /etc/alloy/config.alloy
+    volumes:
+      - ./runtime/config.alloy:/etc/alloy/config.alloy:ro
+      - alloy_data:/var/lib/alloy/data
+      - caddy_logs:/caddy_logs:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    logging: *x-default-logging
+
+  # --------------------------------------------------------------
+  # valkey — Redis-compatible state backend
+  # --------------------------------------------------------------
+  valkey:
+    image: ${VALKEY_IMAGE}
+    pull_policy: missing
+    container_name: corewaf-valkey
+    restart: unless-stopped
+    command: valkey-server --maxmemory 128mb --appendonly no
+    networks:
+      - kit-admin
+    volumes:
+      - valkey_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "valkey-cli ping | grep PONG"]
+      interval: 30s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    logging: *x-default-logging

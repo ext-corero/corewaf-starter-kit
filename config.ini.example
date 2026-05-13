@@ -1,43 +1,27 @@
 # CoreWAF Starter Kit — customer configuration
 #
-# Copy this file to `config.ini` and fill in the two required values, or
+# Copy this file to `config.ini` and fill in the provisioning token, or
 # run `./scripts/install.sh` for a guided TUI that writes it for you.
 #
-# Eventually the curl-driven bootstrap (with an API key) will produce
-# this file automatically; until then, only two values are required.
+# Tunnel v2: a single self-locating token carries everything. The kit
+# decodes the gateway URL from the token, redeems against /redeem, and
+# receives the full provisioning package (tunnel config, mTLS cert,
+# zero-trust secret, observability endpoints, namespace, firewall
+# allowlist) in one round trip. No more entering URLs by hand.
 
 # === Required ===
 
-# Org scope ID — identifies your organisation to the CoreWAF backend.
-# Eventually embedded in the API key; today, supplied here.
-org_scope_id=
-
-# Hostname (without scheme) of the CoreWAF observability deployment.
-# Telemetry endpoints are derived as subdomains: loki.<host>, mimir.<host>,
-# etc. — that's why this is a host, not a full URL. Eventually folded
-# into the API key returned by the future bootstrap exchange.
-# Example: platform.corewaf.example.com
-observability_base_url=
-
-# CoreWAF API gateway URL. The bridge talks to caddy-api at
-# {api_gateway_url}/caddys and to events-api at {api_gateway_url}/events
-# (path-prefix routing handled by the gateway). Eventually this will be
-# embedded in the API key returned by the future bootstrap exchange;
-# until then, supplied here.
-# Example: https://api.corewaf.example.com
-api_gateway_url=
+# Provisioning token issued by the operator. Self-locating: the
+# gateway URL is encoded inside the envelope, so the kit knows where
+# to redeem without a separate `gateway_url` field. Single-use;
+# tokens issued for one install can't be reused.
+#
+# Example: v1.eyJleHAiOjE3MDA...K9.MEUCIQ...
+provisioning_token=
 
 # === Optional ===
 
-# Free-form comment attached to this instance at registration. Shown in
-# the operator GUI alongside the instance — useful for "rack 4, slot 7"
-# or "demo for ACME on 2026-04-25" style notes.
+# Free-form comment attached to this instance for diagnostics. Shown
+# in the operator GUI alongside the instance — useful for
+# "rack 4, slot 7" or "demo for ACME on 2026-04-25" style notes.
 instance_comment=
-
-# Override Caddy admin port if 2019 conflicts on your host.
-# caddy_admin_port=2019
-
-# === Reserved (do not edit) ===
-# These are populated automatically by the discovery stage at boot:
-#   machine_id, hardware_fingerprint, hostname, instance_name
-# Anything you set here will be overwritten.

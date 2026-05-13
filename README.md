@@ -17,10 +17,6 @@ That clones the kit, walks you through two prompts (your **org scope ID**
 and a **single observability base URL**) plus an optional comment, writes
 `config.ini`, and runs `docker compose up -d`.
 
-For the friendliest UI install [`gum`](https://github.com/charmbracelet/gum)
-first; the bootstrap and installer both surface gum-styled prompts and
-spinners when it's available, with plain-text fallbacks when it isn't.
-
 ### Other ways to run the install
 
 | Use case | Command |

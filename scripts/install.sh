@@ -1,282 +1,166 @@
 #!/usr/bin/env bash
-# CoreWAF Starter Kit — interactive installer.
+# CoreWAF Starter Kit — installer.
 #
-# Walks the customer through the three required config.ini values
-# (org_scope_id, observability_base_url, api_gateway_url) plus the
-# optional instance comment. Writes config.ini in the repo root and
-# (unless --no-up) launches the stack with `docker compose up -d`.
+# v2 Phase 1 (foundation tier only): the kit is token-driven. The
+# customer pastes (or env-supplies) a single self-locating
+# provisioning_token; the kit's tunnel mode decodes the gateway URL
+# from the envelope, generates and TPM-binds the kit's mTLS keypair
+# via PKCS#11, redeems against the gateway, and persists everything
+# the bridge stack will eventually need at the handoff-contract paths
+# under /var/lib/tunnel.
 #
-# Uses `gum` for the TUI when available; falls back to plain `read` so
-# the script works on any POSIX host.
-#
-# Eventually replaced by an API-key-driven curl bootstrap that auto-fills
-# config.ini via the discovery service over the Zero Trust tunnel.
+# Phase 1's compose runs only `init` and `tunnel`. The bridge stack
+# (caddy, caddy-bridge, alloy, valkey) is gated behind the `legacy`
+# profile and remains v0-shaped until Phase 2 wires the orchestrator
+# handoff that launches it from a manifest. The legacy profile is
+# offered for diagnostics; it does NOT function end-to-end on a
+# Phase 1 kit because runtime/.env is no longer populated.
 
 set -euo pipefail
 
-# ---------------------------------------------------------------------------
-# Resolve repo root regardless of where the script is invoked from.
-# ---------------------------------------------------------------------------
+# ── locate kit root ───────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 CONFIG_INI="${REPO_ROOT}/config.ini"
-EXAMPLE_INI="${REPO_ROOT}/config.ini.example"
 
 DO_UP=1
+WITH_LEGACY=0
 for arg in "$@"; do
     case "$arg" in
         --no-up) DO_UP=0 ;;
+        --with-legacy) WITH_LEGACY=1 ;;
         -h|--help)
             cat <<EOF
-Usage: ./scripts/install.sh [--no-up]
+Usage: ./scripts/install.sh [--no-up] [--with-legacy]
 
-Interactive installer. Writes config.ini in the repo root from your
-answers, then runs 'docker compose up -d' (skip with --no-up).
+Writes config.ini (one prompt: the provisioning token, unless TOKEN
+env is already set), then runs 'docker compose up -d' to bring the
+foundation tier (init + tunnel) online.
+
+  --no-up         Write config and stop. When ready:
+                  cd '${REPO_ROOT}' && docker compose up -d
+
+  --with-legacy   Also bring up the v0 bridge stack
+                  (caddy + caddy-bridge + alloy + valkey) via the
+                  'legacy' compose profile. Does NOT function
+                  end-to-end on a Phase 1 kit; intended for
+                  diagnostics during the v2 transition.
+
+Env vars:
+  TOKEN              Provisioning token (alias: COREWAF_TOKEN). Skips
+                     the prompt; required when stdin isn't a TTY.
+  INSTANCE_COMMENT   Free-form label (alias: COREWAF_INSTANCE_COMMENT).
 EOF
             exit 0
             ;;
     esac
 done
 
-# ---------------------------------------------------------------------------
-# UI helpers — gum if present, plain read otherwise.
-#
-# If gum isn't on PATH we try to grab a static binary from charmbracelet's
-# GitHub release tarball into ${REPO_ROOT}/.bin/gum (gitignored). The
-# customer's host stays untouched; .bin lives with the kit checkout.
-# Cached across runs.
-# ---------------------------------------------------------------------------
+step() { printf '\n── %s ──\n' "$*"; }
+note() { printf '%s\n' "$*"; }
+fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 
-ensure_gum() {
-    # Already on PATH? Nothing to do.
-    if command -v gum >/dev/null 2>&1; then
-        return 0
-    fi
-    # Already cached locally from a prior run?
-    if [ -x "${REPO_ROOT}/.bin/gum" ]; then
-        export PATH="${REPO_ROOT}/.bin:${PATH}"
-        return 0
-    fi
+# ── preflight ─────────────────────────────────────────────────────────
+step "CoreWAF Starter Kit — installer (v2 Phase 1)"
 
-    local version="0.16.0"
-    local os arch
-    os=$(uname -s)
-    arch=$(uname -m)
-    case "${arch}" in
-        x86_64|amd64)  arch=x86_64 ;;
-        arm64|aarch64) arch=arm64  ;;
-        *)
-            printf '(gum auto-install: unsupported arch %s — falling back to plain prompts)\n' "${arch}" >&2
-            return 0
-            ;;
-    esac
-    case "${os}" in
-        Linux|Darwin) ;;
-        *)
-            printf '(gum auto-install: unsupported OS %s — falling back to plain prompts)\n' "${os}" >&2
-            return 0
-            ;;
-    esac
+command -v docker >/dev/null 2>&1 || fail "docker is required but not on PATH"
+docker compose version >/dev/null 2>&1 || fail "'docker compose' plugin is required (compose v2)"
 
-    local tarball="gum_${version}_${os}_${arch}.tar.gz"
-    local url="https://github.com/charmbracelet/gum/releases/download/v${version}/${tarball}"
-    local tmp; tmp=$(mktemp -d)
+# ── token + comment ──────────────────────────────────────────────────
+PROVISIONING_TOKEN="${TOKEN:-${COREWAF_TOKEN:-}}"
+INSTANCE_COMMENT="${INSTANCE_COMMENT:-${COREWAF_INSTANCE_COMMENT:-}}"
 
-    printf 'Fetching gum %s for %s/%s ...\n' "${version}" "${os}" "${arch}" >&2
-    if ! curl -fsSL "${url}" -o "${tmp}/${tarball}"; then
-        printf '(gum auto-install: download failed — falling back to plain prompts)\n' >&2
-        rm -rf "${tmp}"
-        return 0
-    fi
-    if ! tar -xzf "${tmp}/${tarball}" -C "${tmp}"; then
-        printf '(gum auto-install: extract failed — falling back to plain prompts)\n' >&2
-        rm -rf "${tmp}"
-        return 0
-    fi
+if [ -z "${PROVISIONING_TOKEN}" ] && [ ! -t 0 ]; then
+    cat <<'EOF' >&2
+ERROR: TOKEN is empty.
 
-    mkdir -p "${REPO_ROOT}/.bin"
-    # Tarball layout: gum_VER_OS_ARCH/gum (plus README, LICENSE, etc.)
-    local extracted="${tmp}/gum_${version}_${os}_${arch}/gum"
-    if [ ! -x "${extracted}" ]; then
-        printf '(gum auto-install: binary not found in tarball — falling back to plain prompts)\n' >&2
-        rm -rf "${tmp}"
-        return 0
-    fi
-    mv "${extracted}" "${REPO_ROOT}/.bin/gum"
-    rm -rf "${tmp}"
+  When running via curl, use process substitution so TOKEN reaches bash:
 
-    export PATH="${REPO_ROOT}/.bin:${PATH}"
-}
+    TOKEN=v1.eyJ... bash <(curl -fsSL <bootstrap-url>)
 
-ensure_gum
+  (NOT `TOKEN=… curl … | bash` — env-prefix on a pipeline applies
+   only to curl, not to bash on the right side of the pipe.)
 
-HAS_GUM=0
-if command -v gum >/dev/null 2>&1; then
-    HAS_GUM=1
-fi
+  Or run the installer locally and answer the prompt:
 
-ui_header() {
-    if [ "${HAS_GUM}" = "1" ]; then
-        gum style --bold --foreground 212 --margin "1 0" "$1"
-    else
-        printf '\n=== %s ===\n' "$1"
-    fi
-}
-
-ui_note() {
-    if [ "${HAS_GUM}" = "1" ]; then
-        gum style --foreground 245 "$1"
-    else
-        printf '%s\n' "$1"
-    fi
-}
-
-ui_input() {
-    # $1: prompt   $2: placeholder (optional)
-    local prompt="$1"
-    local placeholder="${2:-}"
-    if [ "${HAS_GUM}" = "1" ]; then
-        gum input --prompt "${prompt}> " --placeholder "${placeholder}"
-    else
-        local answer
-        printf '%s ' "${prompt}>" >&2
-        IFS= read -r answer
-        printf '%s' "${answer}"
-    fi
-}
-
-ui_confirm() {
-    # $1: question. exits 0 (yes) or 1 (no).
-    if [ "${HAS_GUM}" = "1" ]; then
-        gum confirm "$1"
-    else
-        local answer
-        printf '%s [y/N] ' "$1" >&2
-        IFS= read -r answer
-        case "${answer}" in
-            y|Y|yes|YES) return 0 ;;
-            *) return 1 ;;
-        esac
-    fi
-}
-
-ui_run() {
-    # $1: spinner title   $2..: command to run
-    local title="$1"; shift
-    if [ "${HAS_GUM}" = "1" ]; then
-        gum spin --spinner dot --title "${title}" --show-output -- "$@"
-    else
-        printf '… %s\n' "${title}" >&2
-        "$@"
-    fi
-}
-
-# ---------------------------------------------------------------------------
-# Preflight
-# ---------------------------------------------------------------------------
-ui_header "CoreWAF Starter Kit — Installer"
-
-if ! command -v docker >/dev/null 2>&1; then
-    echo "ERROR: docker is required but not on PATH" >&2
-    exit 1
-fi
-if ! docker compose version >/dev/null 2>&1; then
-    echo "ERROR: 'docker compose' plugin is required (compose v2)" >&2
+    bash scripts/install.sh
+EOF
     exit 1
 fi
 
-if [ "${HAS_GUM}" = "0" ]; then
-    ui_note "(gum not installed — using plain prompts. Install gum for a nicer experience: https://github.com/charmbracelet/gum)"
-fi
+while [ -z "${PROVISIONING_TOKEN}" ]; do
+    printf 'Provisioning token (v1.<payload>.<sig>): '
+    IFS= read -r PROVISIONING_TOKEN
+    [ -z "${PROVISIONING_TOKEN}" ] && note "Token is required."
+done
+
+# Sanity-check token shape: three dot-separated segments (JWS).
+# network-loader does the full decode + validation; this is just a
+# fast-fail for obvious typos at the installer level.
+case "${PROVISIONING_TOKEN}" in
+    *.*.*) ;;
+    *) fail "TOKEN doesn't look like a JWS envelope (<header>.<payload>.<sig>)" ;;
+esac
+
+# ── write config.ini ──────────────────────────────────────────────────
+step "Writing ${CONFIG_INI}"
 
 if [ -f "${CONFIG_INI}" ]; then
-    if ! ui_confirm "config.ini already exists — overwrite?"; then
-        echo "Keeping existing config.ini. Re-run with --no-up if you only want the prompts." >&2
-        exit 0
-    fi
+    note "Overwriting existing config.ini."
 fi
-
-# ---------------------------------------------------------------------------
-# Prompts
-# ---------------------------------------------------------------------------
-ui_header "Tell us about this instance"
-
-ORG_SCOPE_ID=""
-while [ -z "${ORG_SCOPE_ID}" ]; do
-    ORG_SCOPE_ID=$(ui_input "Org scope ID" "your-org-name")
-    [ -z "${ORG_SCOPE_ID}" ] && ui_note "Org scope ID is required."
-done
-
-OBSERVABILITY_BASE_URL=""
-while [ -z "${OBSERVABILITY_BASE_URL}" ]; do
-    OBSERVABILITY_BASE_URL=$(ui_input "Observability hostname" "platform.corewaf.example.com")
-    case "${OBSERVABILITY_BASE_URL}" in
-        "") ui_note "Observability hostname is required." ;;
-        http://*|https://*)
-            ui_note "Hostname only — no scheme. Drop the http:// or https://"
-            OBSERVABILITY_BASE_URL=""
-            ;;
-        *) ;;
-    esac
-done
-
-API_GATEWAY_URL=""
-while [ -z "${API_GATEWAY_URL}" ]; do
-    API_GATEWAY_URL=$(ui_input "API gateway URL" "https://api.corewaf.example.com")
-    case "${API_GATEWAY_URL}" in
-        http://*|https://*) ;;
-        "") ui_note "API gateway URL is required." ;;
-        *)
-            ui_note "URL must start with http:// or https://"
-            API_GATEWAY_URL=""
-            ;;
-    esac
-done
-
-INSTANCE_COMMENT=$(ui_input "Instance comment (optional, free-form)" "rack 4, slot 7")
-
-# ---------------------------------------------------------------------------
-# Write config.ini
-# ---------------------------------------------------------------------------
-ui_header "Writing config.ini"
 
 cat > "${CONFIG_INI}" <<EOF
 # Generated by scripts/install.sh on $(date -u +%Y-%m-%dT%H:%M:%SZ).
-# Re-run the installer to regenerate, or edit by hand.
+# Re-run the installer to regenerate.
 
-org_scope_id=${ORG_SCOPE_ID}
-observability_base_url=${OBSERVABILITY_BASE_URL}
-api_gateway_url=${API_GATEWAY_URL}
+provisioning_token=${PROVISIONING_TOKEN}
 instance_comment=${INSTANCE_COMMENT}
 EOF
 
-ui_note "Wrote ${CONFIG_INI}"
+note "Wrote config.ini."
 
-# ---------------------------------------------------------------------------
-# Bring up the stack
-# ---------------------------------------------------------------------------
+# ── bring up the stack ────────────────────────────────────────────────
 if [ "${DO_UP}" = "0" ]; then
-    ui_note "Skipping 'docker compose up' (--no-up). When ready: cd '${REPO_ROOT}' && docker compose up -d"
+    note "Skipping bring-up (--no-up). When ready: cd '${REPO_ROOT}' && docker compose up -d"
     exit 0
 fi
 
-ui_header "Bringing up the stack"
 cd "${REPO_ROOT}"
 
-# Compose evaluates env_file at container CREATE time, not start time, so
-# we run init explicitly first (rendering runtime/.env with real values)
-# and then bring up the long-running services with --no-deps so they're
-# created against the populated env_file.
-mkdir -p runtime
-[ -f runtime/.env ] || : > runtime/.env
+step "Stage 1: init (host probe → /var/lib/tunnel/discovery.json)"
+docker compose run --rm init
 
-ui_run "Stage 1: init (privileged — discovery + template render)" \
-    docker compose run --rm init
+step "Stage 2: tunnel (decode token → keys → /redeem → wg100 up → keepalive loop)"
+docker compose up -d tunnel
 
-ui_run "Stage 2-3: caddy + bridge + alloy + valkey" \
-    docker compose up -d --no-deps caddy caddy-bridge alloy valkey
+note "Waiting for tunnel to become healthy ..."
+_deadline=$(( $(date +%s) + 90 ))
+_status=
+while [ "$(date +%s)" -lt "${_deadline}" ]; do
+    _status="$(docker compose ps --format '{{.Health}}' tunnel 2>/dev/null | head -1)"
+    [ "${_status}" = "healthy" ] && break
+    sleep 2
+done
+if [ "${_status}" != "healthy" ]; then
+    echo "ERROR: tunnel did not become healthy within 90s" >&2
+    docker compose logs --tail=50 tunnel >&2
+    exit 1
+fi
+note "Tunnel healthy. Foundation tier is up."
 
-ui_note ""
-ui_note "Stack is up. Tail logs with: docker compose logs -f caddy-bridge"
-ui_note "Caddy will wait for the CoreWAF backend to provision it before serving traffic;"
-ui_note "telemetry starts flowing immediately via Alloy."
+if [ "${WITH_LEGACY}" = "1" ]; then
+    step "Stage 3 (legacy diagnostics): caddy + bridge + alloy + valkey"
+    note "WARNING: the legacy bridge stack is not wired against the v2 tunnel."
+    note "         These containers will likely fail without runtime/.env."
+    docker compose --profile legacy up -d --no-deps caddy caddy-bridge alloy valkey || true
+fi
+
+cat <<EOF
+
+Foundation tier is up. Tail logs with:
+  docker compose logs -f tunnel        # /redeem flow + WG bring-up + keepalive
+
+The bridge stack (caddy, caddy-bridge, alloy, valkey) does not run
+on Phase 1 by default. Phase 2 will add an 'orchestrator' service
+that launches them via docker socket from a manifest.
+EOF
