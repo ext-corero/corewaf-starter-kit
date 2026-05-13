@@ -198,9 +198,18 @@ services:
     # asks the host docker daemon to bind-mount a rendered config,
     # the path translates trivially because there's nothing to
     # translate.
+    # `run` (the heavy deploy verb), not `compose up`. Post-orchestrator
+    # commit 6a0d7fc the `compose` verbs became operational primitives
+    # — they no longer apply networks/volumes (that's `run`'s job).
+    # The bridge stack needs the volumes declared in service.json
+    # (caddy_data, caddy_config, caddy_logs, alloy_data, valkey_data)
+    # created before docker-compose-up, so we invoke `run` which does:
+    #   load manifest → build env → apply resources → render templates
+    #   → docker compose up.
+    # No `artifact` block in the bridge-stack manifest, so the OCI-pull
+    # step is a no-op.
     command:
-      - compose
-      - up
+      - run
       - --service-dir=${MOUNT_DIR:-${PWD}}/manifests/bridge-stack
       - --manifest=${MOUNT_DIR:-${PWD}}/manifests/bridge-stack/service.json
       - --bootstrap=/var/lib/tunnel/bootstrap
