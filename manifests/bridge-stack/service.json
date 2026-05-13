@@ -1,8 +1,8 @@
 {
-  "version": "0.0.6",
+  "version": "0.0.5",
   "service": {
     "name": "corewaf-bridge",
-    "description": "Phase 2 bridge stack — caddy-internal (docker-label proxy + ACME), caddy-bridge (operator action listener), alloy (telemetry), valkey (state). Launched by `orchestrator compose up` from the foundation tier (waf/corewaf-starter-kit/compose.yml's `orchestrator` service) once `tunnel` is healthy.",
+    "description": "Phase 2 bridge stack — caddy-internal (docker-label proxy + ACME), caddy-bridge (operator action listener), alloy (telemetry), valkey (state). Launched by `orchestrator run` from the foundation tier (waf/corewaf-starter-kit/compose.yml's `orchestrator` service) once `tunnel` is healthy. `run` applies the docker.volumes declarations before docker-compose-up; the `compose` verbs are operational-only primitives (post orchestrator commit 6a0d7fc).",
     "sources": {
       "ghcr.io/ext-corero/waf/caddy-bridge": "tunnel-v0",
       "ghcr.io/ext-corero/services/core/caddy-docker-proxy": "1.0.0",
