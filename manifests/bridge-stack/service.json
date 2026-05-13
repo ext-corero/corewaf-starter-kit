@@ -1,5 +1,5 @@
 {
-  "version": "0.0.5",
+  "version": "0.0.6",
   "service": {
     "name": "corewaf-bridge",
     "description": "Phase 2 bridge stack — caddy-internal (docker-label proxy + ACME), caddy-bridge (operator action listener), alloy (telemetry), valkey (state). Launched by `orchestrator compose up` from the foundation tier (waf/corewaf-starter-kit/compose.yml's `orchestrator` service) once `tunnel` is healthy.",

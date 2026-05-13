@@ -78,6 +78,12 @@ services:
       - caddy_data:/data
       - caddy_config:/config
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      # tunnel_state read-only — network-loader writes the operator
+      # root CA at /var/lib/tunnel/mtls/operator-ca.pem on every
+      # successful /reconnect. Caddy reads it via the `acme_ca_root`
+      # global option below so the ACME flow trusts step-ca's HTTPS
+      # without requiring system-trust mods (no root in the container).
+      - tunnel_state:/var/lib/tunnel:ro
     environment:
       # caddy-docker-proxy controls — make the proxy pick up labels
       # from any docker network attached to the daemon (the tunnel
@@ -85,6 +91,23 @@ services:
       CADDY_DOCKER_MODE: standalone
       CADDY_DOCKER_LABEL_PREFIX: caddy
     labels:
+      # ── ACME global options (kit-v2 §1.8 mgmt-plane flow) ──
+      # acme_ca points at the operator's step-ca ACME directory
+      # (rendered by orchestrator from /etc/bootstrap's `acme_url`).
+      # acme_ca_root tells Caddy to trust step-ca's HTTPS chain when
+      # dialing the directory and during the challenge round-trip —
+      # config-level trust, no `update-ca-certificates`. The CA file
+      # is on the tunnel_state volume mounted above.
+      #
+      # An empty `acme_url` (operator hasn't configured this endpoint
+      # in the tenant chain) leaves Caddy on its built-in ACME issuer
+      # default — Caddy still starts; per-site cert acquisition simply
+      # uses internal/snakeoil instead of step-ca. That's the
+      # explicit fallback semantics the bootstrap-empty-key contract
+      # documents.
+      caddy.email: kit@internal
+      caddy.acme_ca: ${acme_url}
+      caddy.acme_ca_root: /var/lib/tunnel/mtls/operator-ca.pem
       # Alloy's discovery.docker picks these up via
       # __meta_docker_container_label_* and turns this container
       # into a metrics + logs target. See manifests/bridge-stack/
@@ -130,6 +153,15 @@ services:
       # machine_id, hardware_fingerprint) instead of falling back to
       # local introspection inside the netns'd container.
       HWINFO_DIR: /var/lib/tunnel
+      # Trust the operator's root CA for outbound HTTPS to the API
+      # gateway. Python's `ssl` module reads SSL_CERT_FILE as its
+      # default trust anchor; httpx (and anything else stdlib-backed
+      # in caddy-bridge) inherits it. The file is written by
+      # network-loader on every successful /reconnect onto the
+      # tunnel_state volume already mounted at /var/lib/tunnel:ro
+      # below. Same single-source-of-truth file caddy-internal reads
+      # for its ACME trust pool.
+      SSL_CERT_FILE: /var/lib/tunnel/mtls/operator-ca.pem
       SERVICE_HOST: 0.0.0.0
       SERVICE_PORT: 8090
       # Bridge resolves caddy-waf via label-based discovery, not a
