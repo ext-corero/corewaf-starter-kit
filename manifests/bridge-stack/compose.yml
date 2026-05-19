@@ -244,8 +244,28 @@ services:
     labels:
       # caddy-docker-proxy hooks: route bridge-API requests on the
       # caddy-internal admin path to this container.
-      caddy: bridge.internal
-      caddy.reverse_proxy: "{{ upstreams 8090 }}"
+      # Serve two SNIs/hosts: the canonical ``bridge.internal`` (for
+      # in-kit clients) and the kit's WG-allocated address (for the
+      # operator-side bridge proxy in tunnel-gateway, which dials this
+      # kit by its ZTK.spec.tunnel.clientIP — httpx uses that hostname
+      # as the SNI, so caddy-internal must have a matching site).
+      caddy: "bridge.internal ${tunnel_client_ip}"
+      # Force the internal CA issuer — the operator's ACME endpoint
+      # (acme_url) is typically empty in this rig and the global
+      # placeholder URL can't actually mint certs. The cert here is
+      # used only INSIDE the WG tunnel; the gateway's bridge-proxy
+      # dials with verify=False, and the WG layer below is the
+      # cryptographic boundary. Operators that want a real ACME
+      # cert can override this label per-deployment.
+      caddy.tls: internal
+      # Reverse-proxy to the kit's own WG address. caddy-bridge binds
+      # 0.0.0.0:8090 inside the tunnel netns; the kit's wg0 in that
+      # netns carries the ``tunnel_client_ip`` (the operator-side
+      # identity for this kit, sourced from the ZTK at /redeem time).
+      # Using that IP — rather than 127.0.0.1 — keeps the address
+      # symmetric with what the operator plane uses and exercises the
+      # wg-IP routing path inside the kit.
+      caddy.reverse_proxy: "${tunnel_client_ip}:8090"
       # Alloy docker-label discovery (see alloy.tmpl). caddy-bridge
       # exposes /metrics on its service port.
       prometheus.io/scrape: "true"
