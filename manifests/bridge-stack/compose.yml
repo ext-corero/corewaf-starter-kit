@@ -100,13 +100,20 @@ services:
       # is on the tunnel_state volume mounted above.
       #
       # An empty `acme_url` (operator hasn't configured this endpoint
-      # in the tenant chain) leaves Caddy on its built-in ACME issuer
-      # default — Caddy still starts; per-site cert acquisition simply
-      # uses internal/snakeoil instead of step-ca. That's the
-      # explicit fallback semantics the bootstrap-empty-key contract
-      # documents.
+      # in the tenant chain) needs to leave Caddy on its built-in
+      # ACME issuer default — Caddy still starts; per-site cert
+      # acquisition simply uses internal/snakeoil instead of step-ca.
+      #
+      # ${acme_url:-...} placeholder default: an empty value would
+      # cause caddy-docker-proxy to emit `acme_ca` with no argument,
+      # which makes the Caddyfile global block fail to parse and the
+      # whole config gets dropped (Round-1 incident). The placeholder
+      # URL is never dialed unless a site actually requests ACME, so
+      # the kit boots fine even with no real ACME upstream.
+      # Same applies to acme_ca_root — its file must exist to be
+      # readable; only meaningful when ACME is actually used.
       caddy.email: kit@internal
-      caddy.acme_ca: ${acme_url}
+      caddy.acme_ca: ${acme_url:-https://acme.disabled.invalid/directory}
       caddy.acme_ca_root: /var/lib/tunnel/mtls/operator-ca.pem
       # Alloy's discovery.docker picks these up via
       # __meta_docker_container_label_* and turns this container
@@ -133,10 +140,62 @@ services:
     container_name: corewaf-bridge
     restart: unless-stopped
     network_mode: "container:${TUNNEL_CONTAINER_NAME}"
+    # Run as root inside the kit. Two reasons, both Round-1 simplifications:
+    #   1. tunnel_state files (discovery.json, bootstrap, operational.json)
+    #      are written by network-loader mode 0600 root:root. uid 1100
+    #      (the image's default `bridge` user) can't read them. Proper
+    #      fix is network-loader writing non-secret files 0644 — tracked
+    #      separately. Until then, root reads everything.
+    #   2. /var/run/docker.sock requires the host docker GID; without
+    #      `group_add: [${DOCKER_GID}]` the bridge gets EACCES on the
+    #      socket. Running as root sidesteps the group-add dance.
+    # The bridge already has docker.sock access for the `restart`/
+    # `get-logs` actions, which is effectively root-equivalent, so
+    # the security regression is nil.
+    user: "0"
     environment:
       # Operator-side endpoints come from /etc/bootstrap, expanded
       # by the orchestrator at compose-up time.
-      API_GATEWAY_URL: ${core_api_gateway_url}
+      #
+      # API_GATEWAY_URL is HARDCODED to the kit-side VIP for Round-1
+      # rig E2E. Bootstrap's ${core_api_gateway_url} currently delivers
+      # the /redeem URL (https://corewaf.localhost:9443) because
+      # /reconnect's chain-walk for endpoints.apiGateway returns empty
+      # — no tenant sets it and tunnel-gw's endpoint_fallback config
+      # field doesn't exist (reconnect.py:85 references it but
+      # config.py doesn't define it). The /redeem URL is only valid
+      # for the redeem flow, not the API; bridge gets HTTP 404 on
+      # registration. Proper Round-2 fix: add endpoint_fallback to
+      # tunnel-gw config and set it via TUNNELGW_ENDPOINT_FALLBACK_*
+      # env in the operator deployment. Then switch this back to
+      # ${core_api_gateway_url}.
+      API_GATEWAY_URL: "http://172.30.0.99"
+      # X-Scope-OrgID the bridge sends on caddy_api calls.
+      #
+      # The gateway delivers ${xorg_scope_id} in the bootstrap, but
+      # that's the kit's TENANT name (e.g. "att-com-soylent") — a
+      # kind=tenant record, which v3 Casbin does NOT grant
+      # create:caddy_instance on. The right identity is a service-
+      # identity like "att-caddy-owner" (kind=service-identity, role=
+      # operator_resources_role) derived from the kit's carrier.
+      #
+      # Until tunnel-gw's /reconnect chain-walks the carrier and
+      # picks the right caddy-owner identity, hardcode the elevated
+      # system-admin (matches bridge's pre-v3 default behaviour).
+      # Round-2 fix is in tunnel-gw; then this line returns to
+      # ${xorg_scope_id}.
+      BRIDGE_SCOPE_ORGID: "corero-system-admin"
+      # Reverse URL template: caddy_api dials https://actions.<hw_id>.
+      # <gateway_id>.<bridges_zone>:446/, which operator DNS resolves
+      # through the kit's CNAME (created by caddy_api on registration) →
+      # gateway A record (created by provisioning_api on gateway
+      # registration; value is the gateway's apparent source-IP as seen
+      # by the API — survives NAT) → gateway bridge-proxy listener, which
+      # routes back into this kit by SNI. The {hw_id} placeholder is
+      # filled by the bridge from its instance_name at registration time.
+      # Empty => disabled; the bridge falls back to its private-IP
+      # derivation (in-host dev only).
+      BRIDGE_REVERSE_URL_TEMPLATE: ${bridge_reverse_url_template:-}
       NAMESPACE: ${namespace}
       TUNNEL_CLIENT_IP: ${tunnel_client_ip}
       ZTK_SECRET_PATH: /var/lib/tunnel/secret/ztk
