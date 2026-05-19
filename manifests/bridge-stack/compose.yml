@@ -223,15 +223,25 @@ services:
       SSL_CERT_FILE: /var/lib/tunnel/mtls/operator-ca.pem
       SERVICE_HOST: 0.0.0.0
       SERVICE_PORT: 8090
-      # Bridge resolves caddy-waf via label-based discovery, not a
-      # hard-coded URL — it scans the docker daemon for containers
-      # carrying both `corewaf.io/managed=true` and
-      # `corewaf.io/role=caddy-waf`, then dials that container's name.
-      # caddy-waf runs in a SEPARATE compose ("third stack") on the
-      # kit-admin network; the labels must be set on its compose service
-      # definition. The env fallback below is only used if discovery is
-      # disabled via REQUIRE_CADDY_LABEL=false (legacy mode).
-      # CADDY_ADMIN_URL: http://caddy-waf:2019  # legacy/fallback only
+      # Bridge resolves caddy-waf via TWO independent paths:
+      #
+      #   1. Docker socket + label discovery (docker_controller). This
+      #      is what the action surfaces that exec into the container
+      #      (restart, get-logs, get-waf-state) use to find the right
+      #      container. Strictly label-filtered: corewaf.io/managed=true
+      #      + corewaf.io/role=caddy-waf.
+      #
+      #   2. Admin HTTP URL (caddy_admin_client). The bridge's
+      #      get-config / load-config talk to the Caddy admin API at
+      #      this URL. It is NOT discovery-driven today — has to be
+      #      set explicitly. localhost:2019 (the config.py default)
+      #      lands on caddy-internal here, NOT the WAF, because the
+      #      bridge shares the tunnel container's netns and
+      #      caddy-internal listens on 127.0.0.1:2019 there.
+      #
+      # caddy-waf binds admin on :2019 inside its own netns; reachable
+      # from the bridge via the kit-admin network alias.
+      CADDY_ADMIN_URL: http://corewaf-caddy:2019
       HEARTBEAT_INTERVAL_SECONDS: 30
       CADDY_MONITOR_INTERVAL_SECONDS: 60
     volumes:
