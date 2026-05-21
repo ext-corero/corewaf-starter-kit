@@ -121,6 +121,14 @@ loki.source.docker "kit" {
 // (alloy.tmpl is a Go text/template; orchestrator substitutes
 // from /etc/bootstrap, which is loki_url / mimir_url / otel_url
 // resolved at /reconnect time).
+//
+// loki.write and prometheus.remote_write accept empty endpoint URLs
+// — alloy logs the missing config and the component stays idle.
+// otelcol.exporter.otlphttp DOES NOT: "at least one endpoint must
+// be specified" errors at config-load time and refuses startup. So
+// the otelcol block below is wrapped in an `if` directive to omit
+// the component entirely when no upstream is configured. Nothing
+// else in this template references it, so omitting is safe.
 // --------------------------------------------------------------
 loki.write "default" {
 	endpoint {
@@ -134,8 +142,10 @@ prometheus.remote_write "default" {
 	}
 }
 
+{{ if .Env.otel_url }}
 otelcol.exporter.otlphttp "default" {
 	client {
 		endpoint = "{{ .Env.otel_url }}"
 	}
 }
+{{ end }}

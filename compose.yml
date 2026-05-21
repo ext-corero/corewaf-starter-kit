@@ -67,6 +67,17 @@ networks:
     name: kit-admin
 
 volumes:
+  # Shared between the foundation compose's caddy-waf service and the
+  # orchestrator-launched bridge-stack (alloy reads caddy_logs;
+  # caddy-internal writes ACME state into caddy_data). Declared here
+  # (not external) so they're created at compose-up before either
+  # consumer is up. The bridge-stack manifest declares the same names
+  # with action=keep so the orchestrator's `run` finds them and
+  # passes through. Explicit `name:` prevents docker compose's
+  # project-prefix from breaking the cross-compose alias.
+  caddy_data:    { name: caddy_data }
+  caddy_config:  { name: caddy_config }
+  caddy_logs:    { name: caddy_logs }
   # tunnel_state — WG keypair, /redeem package, mTLS cert, ZTK
   # secret. Explicit `name:` so docker compose doesn't project-
   # prefix it; the bridge-stack compose mounts it as external by
@@ -224,30 +235,31 @@ services:
     logging: *x-default-logging
 
   # ------------------------------------------------------------------
-  # Stage 2 / 3 (legacy) — Bridge stack + Caddy-WAF
+  # Stage 3 — caddy-waf (the actual WAF instance).
   #
-  # In Phase 1 these services are inert: they're attached to the
-  # `legacy` profile, so `docker compose up` (no profile) brings up
-  # only the foundation tier (init + tunnel). Phase 2 adds an
-  # `orchestrator` service that launches the bridge stack via docker
-  # socket from a manifest, at which point these compose entries are
-  # removed.
+  # Lives in the foundation compose alongside init/tunnel/orchestrator
+  # because operationally it's a peer of the bridge stack — the bridge
+  # MUST tolerate caddy-waf being down or restarted (and vice versa).
+  # Three-stack lifecycle independence per kit-v2 §1.13:
   #
-  # Customers transitioning a v0 install can opt into the legacy
-  # bridge stack with:
+  #   1. init + tunnel + orchestrator  (this compose, foundation)
+  #   2. bridge-stack                  (launched by orchestrator from
+  #                                     manifests/bridge-stack/)
+  #   3. caddy-waf                     (this service, here)
   #
-  #     docker compose --profile legacy up -d
-  #
-  # but the v0 stack expects ./runtime/.env (populated by the v0
-  # tunnel-client). Phase 1's network-loader writes /etc/bootstrap
-  # and /var/lib/tunnel/* instead, so the legacy stack does NOT
-  # function end-to-end on a Phase 1 kit. Use --profile legacy for
-  # comparison/diagnostics only until Phase 2 lands.
+  # caddy-waf boots with a minimal Caddyfile baked into the image
+  # (config-init/Caddyfile) — admin :2019 listening, /health on :80
+  # for the allowlist. The bridge discovers it via the docker labels
+  # below and PATCHes its real config via the admin API (the bridge
+  # is a passive conduit; this kit doesn't carry an operator-shipped
+  # Caddyfile). depends_on the orchestrator service ensures the shared
+  # ``caddy_data`` / ``caddy_config`` / ``caddy_logs`` external volumes
+  # have been created by the bridge-stack `run`, and valkey is up.
   # ------------------------------------------------------------------
-  caddy:
+  caddy-waf:
     image: ghcr.io/ext-corero/waf/caddy-waf:latest
+    pull_policy: missing
     container_name: corewaf-caddy
-    profiles: [legacy]
     restart: unless-stopped
     cap_add:
       - NET_ADMIN
@@ -256,16 +268,24 @@ services:
       - "80:80"
       - "443:443"
     environment:
+      # valkey is on kit-admin (brought up by the bridge-stack
+      # orchestrator); resolve by service name in that network.
       REDIS_HOST: valkey
       REDIS_PORT: "6379"
     volumes:
-      - ./runtime/Caddyfile:/etc/caddy/Caddyfile:ro
+      # Shared with the bridge-stack — ``caddy-internal`` writes its
+      # certs into caddy_data, but the WAF's own runtime state
+      # (autosave, persisted config) lives in caddy_config. caddy_logs
+      # is what /actions/get-logs / alloy tail through this kit.
+      # NOTE: no /etc/caddy/Caddyfile bind-mount — the image ships a
+      # default at /etc/caddy/Caddyfile (config-init/Caddyfile via
+      # the Dockerfile symlink). The bridge replaces the active
+      # config via `POST /load` once the operator provisions it.
       - caddy_data:/data
       - caddy_config:/config
       - caddy_logs:/var/log/caddy
     networks:
-      - corewaf-edge
-      - corewaf-internal
+      - kit-admin
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1/health"]
       interval: 15s
@@ -273,139 +293,26 @@ services:
       retries: 3
       start_period: 10s
     depends_on:
-      init:
+      # orchestrator brings up the bridge stack (caddy-internal,
+      # caddy-bridge, alloy, valkey) and creates the shared external
+      # volumes. Waiting on it gives us valkey + the volumes before
+      # the WAF starts.
+      orchestrator:
         condition: service_completed_successfully
-      valkey:
-        condition: service_started
     labels:
-      # caddy-bridge discovers its target by these labels (mirror of
-      # dns-bridge's CoreDNS discovery). `managed=true` qualifies for
-      # bridge management; `role=caddy-waf` discriminates this from
-      # caddy-internal (the docker-proxy router, which also runs the
-      # Caddy binary but is NOT the WAF). `admin-port` is optional —
-      # the bridge defaults to 2019 if absent — but stated explicitly
-      # so a reader sees which port the bridge will dial.
+      # caddy-bridge discovers its target by these labels — and
+      # ONLY these labels (the heuristic "any container with caddy in
+      # the image" matched caddy-internal too, which is wrong; the
+      # docker_controller fix in this round filters strictly on
+      # the pair below).
       corewaf.io/managed: "true"
       corewaf.io/role: "caddy-waf"
       corewaf.io/admin-port: "2019"
-    logging: *x-default-logging
-
-  caddy-bridge:
-    # Pinned to :tunnel-v0 (NOT :latest) — this branch needs the
-    # PATCH-on-409 fix in waf-caddy-bridge/feature/tunnel-v0 that
-    # refreshes spec.host on re-registration. The :latest tag on GHCR
-    # tracks main and won't have the fix until that branch merges.
-    # Promote :tunnel-v0 → :latest at merge time via the bridge repo's
-    # `promote` workflow_dispatch.
-    image: ghcr.io/ext-corero/waf/caddy-bridge:tunnel-v0
-    container_name: corewaf-bridge
-    profiles: [legacy]
-    restart: unless-stopped
-    # Publish 8090 so callers on the host (and via the tunnel — wg100
-    # arrives on this host's lo, then hits the host port binding)
-    # can reach the bridge. The CaddyInstance registration advertises
-    # http://<tunnel-hostname>:8090, which resolves to the kit's
-    # tunnel IP — that IP is local to this host (assigned to wg100),
-    # so the kernel delivers the connection to whatever is listening
-    # on 8090 here. Without this binding, the connection lands on a
-    # closed port.
-    ports:
-      - "8090:8090"
-    # Host's docker group GID. The bridge needs to read /var/run/docker.sock
-    # for the `restart` and `get-logs` action handlers. The bridge user
-    # (uid 1100) is in no extra groups by default; without group_add =
-    # docker GID it gets EACCES on the socket. install.sh detects the
-    # host GID and writes it to .env in the kit root.
-    group_add:
-      - "${DOCKER_GID:-999}"
-    env_file:
-      - ./runtime/.env
-    environment:
-      SERVICE_HOST: 0.0.0.0
-      SERVICE_PORT: 8090
-      CADDY_ADMIN_URL: http://caddy:2019
-      CADDY_CONTAINER_NAME: corewaf-caddy
-      HWINFO_DIR: /workspace/runtime
-      HEARTBEAT_INTERVAL_SECONDS: 30
-      # NAMESPACE intentionally NOT set here — comes from
-      # runtime/.env which the tunnel-client populates from the
-      # token envelope's `ns` field after redemption.
-    volumes:
-      - ./runtime:/workspace/runtime:ro
-      - /var/run/docker.sock:/var/run/docker.sock
-    networks:
-      # corewaf-internal: reach caddy admin + valkey inside the kit
-      # corewaf-edge:     non-internal, so the bridge can dial the
-      #                   API gateway (whether that's the host's caddy
-      #                   ingress in same-host testing, or the rig's
-      #                   tunnel IP / hostname in production)
-      - corewaf-internal
-      - corewaf-edge
-    extra_hosts:
-      # When API_GATEWAY_URL points at corewaf.localhost (same-host
-      # demo against a local rig), make that name resolve to the
-      # docker host's gateway IP so the bridge can actually reach it.
-      # No-op for production deployments where API_GATEWAY_URL is a
-      # real DNS name resolvable inside the container.
-      - "corewaf.localhost:host-gateway"
-    healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:8090/health"]
-      interval: 15s
-      timeout: 3s
-      retries: 5
-      start_period: 10s
-    depends_on:
-      init:
-        condition: service_completed_successfully
-      caddy:
-        condition: service_started
-      tunnel:
-        condition: service_healthy
-    logging: *x-default-logging
-
-  # ------------------------------------------------------------------
-  # Stage 3 — Alloy + supporting services (parallel to caddy + bridge)
-  # ------------------------------------------------------------------
-  alloy:
-    image: grafana/alloy:v1.7.5
-    container_name: corewaf-alloy
-    profiles: [legacy]
-    restart: unless-stopped
-    command:
-      - run
-      - --server.http.listen-addr=0.0.0.0:12345
-      - --storage.path=/var/lib/alloy/data
-      - --disable-reporting
-      - /etc/alloy/config.alloy
-    volumes:
-      - ./runtime/config.alloy:/etc/alloy/config.alloy:ro
-      - alloy_data:/var/lib/alloy/data
-      - caddy_logs:/caddy_logs:ro
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-    networks:
-      - corewaf-internal
-    depends_on:
-      init:
-        condition: service_completed_successfully
-    logging: *x-default-logging
-
-  valkey:
-    image: valkey/valkey:8
-    container_name: corewaf-valkey
-    profiles: [legacy]
-    restart: unless-stopped
-    command: valkey-server --maxmemory 128mb --appendonly no
-    volumes:
-      - valkey_data:/data
-    networks:
-      - corewaf-internal
-    healthcheck:
-      test: ["CMD-SHELL", "valkey-cli ping | grep PONG"]
-      interval: 30s
-      timeout: 3s
-      retries: 5
-      start_period: 10s
-    depends_on:
-      init:
-        condition: service_completed_successfully
+      # Alloy picks these up via docker-label discovery and turns this
+      # container into a metrics + logs target. Mirrors the bridge-
+      # stack pattern.
+      prometheus.io/scrape: "true"
+      prometheus.io/port: "2019"
+      prometheus.io/path: /metrics
+      loki.io/scrape: "true"
     logging: *x-default-logging
