@@ -157,19 +157,15 @@ services:
       # Operator-side endpoints come from /etc/bootstrap, expanded
       # by the orchestrator at compose-up time.
       #
-      # API_GATEWAY_URL is HARDCODED to the kit-side VIP for Round-1
-      # rig E2E. Bootstrap's ${core_api_gateway_url} currently delivers
-      # the /redeem URL (https://corewaf.localhost:9443) because
-      # /reconnect's chain-walk for endpoints.apiGateway returns empty
-      # — no tenant sets it and tunnel-gw's endpoint_fallback config
-      # field doesn't exist (reconnect.py:85 references it but
-      # config.py doesn't define it). The /redeem URL is only valid
-      # for the redeem flow, not the API; bridge gets HTTP 404 on
-      # registration. Proper Round-2 fix: add endpoint_fallback to
-      # tunnel-gw config and set it via TUNNELGW_ENDPOINT_FALLBACK_*
-      # env in the operator deployment. Then switch this back to
-      # ${core_api_gateway_url}.
-      API_GATEWAY_URL: "http://172.30.0.99"
+      # API_GATEWAY_URL flows from /reconnect's resolved endpoint:
+      # network-loader sets ${core_api_gateway_url} =
+      # Operational.Endpoints.APIGateway (pkg.go), which the gateway
+      # resolves by chain-walking the tenant→owner→apex endpoints and
+      # finally the provisioning-space tunnel defaults
+      # (/system/tunnel/defaults → endpoint_fallback). No hardcoded
+      # address in the kit — the gateway is the single source of the
+      # API endpoint, bootstrapped fresh on every /reconnect.
+      API_GATEWAY_URL: ${core_api_gateway_url}
       # X-Scope-OrgID the bridge sends on caddy_api calls.
       #
       # The gateway delivers ${xorg_scope_id} in the bootstrap, but
