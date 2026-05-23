@@ -255,23 +255,30 @@ services:
       # operator-side bridge proxy in tunnel-gateway, which dials this
       # kit by its ZTK.spec.tunnel.clientIP — httpx uses that hostname
       # as the SNI, so caddy-internal must have a matching site).
-      caddy: "bridge.internal ${tunnel_client_ip}"
-      # Force the internal CA issuer — the operator's ACME endpoint
-      # (acme_url) is typically empty in this rig and the global
-      # placeholder URL can't actually mint certs. The cert here is
-      # used only INSIDE the WG tunnel; the gateway's bridge-proxy
-      # dials with verify=False, and the WG layer below is the
-      # cryptographic boundary. Operators that want a real ACME
-      # cert can override this label per-deployment.
-      caddy.tls: internal
-      # Reverse-proxy to the kit's own WG address. caddy-bridge binds
-      # 0.0.0.0:8090 inside the tunnel netns; the kit's wg0 in that
-      # netns carries the ``tunnel_client_ip`` (the operator-side
-      # identity for this kit, sourced from the ZTK at /redeem time).
-      # Using that IP — rather than 127.0.0.1 — keeps the address
-      # symmetric with what the operator plane uses and exercises the
-      # wg-IP routing path inside the kit.
-      caddy.reverse_proxy: "${tunnel_client_ip}:8090"
+      # Two ordered sites, both reverse-proxying to caddy-bridge :8090.
+      #
+      # caddy_0 — the canonical bridge.internal + the kit's WG address, on the
+      # INTERNAL CA. In-kit clients + the legacy verify=False bridge-proxy path
+      # use these; the cert lives only inside the WG tunnel.
+      caddy_0: "bridge.internal ${tunnel_client_ip}"
+      caddy_0.tls: internal
+      caddy_0.reverse_proxy: "${tunnel_client_ip}:8090"
+      # caddy_1 — the operator-facing reverse-channel name, served with a REAL
+      # step-ca cert via FORCED TLS-ALPN-01. The gateway's caddy-l4 :443 front
+      # routes operator->kit (and the step-ca ACME challenge) to this SNI, and
+      # the kit terminates here -> end-to-end TLS (#97/#98). bridge_fqdn =
+      # <hw_id>.<gw>.bridges.internal, derived by network-loader into
+      # /etc/bootstrap. disable_http_challenge forces tls-alpn-01: step-ca can
+      # only reach the kit by SNI on :443 through the L4 front, never on :80.
+      caddy_1: "${bridge_fqdn}"
+      # `issuer acme { ... }` — acme is the issuer's inline argument, so it maps
+      # to `caddy_1.tls.issuer: acme` plus sub-keys (NOT a `.acme.` nesting,
+      # which renders the invalid `issuer { acme { ... } }` and gets dropped).
+      caddy_1.tls.issuer: acme
+      caddy_1.tls.issuer.dir: "${acme_url}"
+      caddy_1.tls.issuer.trusted_roots: /var/lib/tunnel/mtls/operator-ca.pem
+      caddy_1.tls.issuer.disable_http_challenge: ""
+      caddy_1.reverse_proxy: "${tunnel_client_ip}:8090"
       # Alloy docker-label discovery (see alloy.tmpl). caddy-bridge
       # exposes /metrics on its service port.
       prometheus.io/scrape: "true"
