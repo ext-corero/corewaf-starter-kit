@@ -238,6 +238,11 @@ services:
       # caddy-waf binds admin on :2019 inside its own netns; reachable
       # from the bridge via the kit-admin network alias.
       CADDY_ADMIN_URL: http://corewaf-caddy:2019
+      # The caddy the bridge manages + introspects (version/modules at
+      # registration). Set explicitly: the docker_controller image-name
+      # heuristic would otherwise self-match ``caddy-bridge`` (its own
+      # image also contains "caddy") and report version=unknown, modules=[].
+      CADDY_CONTAINER_NAME: corewaf-caddy
       HEARTBEAT_INTERVAL_SECONDS: 30
       CADDY_MONITOR_INTERVAL_SECONDS: 60
     volumes:
