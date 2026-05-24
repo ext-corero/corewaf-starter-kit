@@ -148,6 +148,15 @@ services:
     container_name: corewaf-tunnel
     command: ["tunnel"]
     restart: unless-stopped
+    # Rig our embedded forwarder into the netns: docker keeps 127.0.0.11 as the
+    # resolv.conf nameserver (kit-internal aliases + the gateway hostname still
+    # resolve locally/host as usual) but forwards EXTERNAL queries to our
+    # forwarder at 127.0.2.1:53. This netns is shared by the bridge-stack
+    # (network_mode: container:), so the bridge/alloy/caddy-internal inherit it.
+    # Operator names then route over wg100 (cached/resilient); the forwarder
+    # falls back to the host resolver on a wg100 network error.
+    dns:
+      - 127.0.2.1
     cap_add:
       - NET_ADMIN
       - SYS_MODULE
