@@ -267,7 +267,13 @@ services:
       # use these; the cert lives only inside the WG tunnel.
       caddy_0: "bridge.internal ${tunnel_client_ip}"
       caddy_0.tls: internal
-      caddy_0.reverse_proxy: "${tunnel_client_ip}:8090"
+      # caddy-internal and caddy-bridge ALWAYS share this kit's tunnel netns
+      # (network_mode:container), so the proxy hop is intra-netns — target the
+      # STABLE loopback, never the volatile WG clientIP. Coupling it to
+      # ${tunnel_client_ip} broke the reverse channel whenever the clientIP
+      # changed (re-home / IPAM re-lease / recovery) without a re-render. Each
+      # kit's loopback is its own netns, so this is multi-kit safe.
+      caddy_0.reverse_proxy: "127.0.0.1:8090"
       # caddy_1 — the operator-facing reverse-channel name, served with a REAL
       # step-ca cert via FORCED TLS-ALPN-01. The gateway's caddy-l4 :443 front
       # routes operator->kit (and the step-ca ACME challenge) to this SNI, and
@@ -283,7 +289,8 @@ services:
       caddy_1.tls.issuer.dir: "${acme_url}"
       caddy_1.tls.issuer.trusted_roots: /var/lib/tunnel/mtls/operator-ca.pem
       caddy_1.tls.issuer.disable_http_challenge: ""
-      caddy_1.reverse_proxy: "${tunnel_client_ip}:8090"
+      # Same intra-netns hop as caddy_0 — stable loopback, not the WG clientIP.
+      caddy_1.reverse_proxy: "127.0.0.1:8090"
       # Alloy docker-label discovery (see alloy.tmpl). caddy-bridge
       # exposes /metrics on its service port.
       prometheus.io/scrape: "true"
