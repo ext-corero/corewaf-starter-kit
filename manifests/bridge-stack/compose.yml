@@ -296,26 +296,21 @@ services:
       # Same intra-netns hop as caddy_0 — stable loopback, not the WG clientIP.
       caddy_1.reverse_proxy: "127.0.0.1:8090"
       # caddy_2 — the OVERLAY reverse-channel name, keyed on the api-minted
-      # caddyInstanceUuid instead of the underlay hw_id. Note the host shape:
-      # <uuid>.${bridge_zone} = <uuid>.<gw>.bridges.internal — it SHARES the
-      # gateway label with caddy_1 (<hw_id>.<gw>.bridges.internal) because the
-      # edge L4 SNI matcher is `*.<gw>.bridges.internal` (exactly one label
-      # before the gateway id) — a flat <uuid>.bridges.internal would never
-      # route. CADDY_INSTANCE_UUID is the local-file secret (service.json),
-      # merged into env by the orchestrator before `compose up`; bridge_zone is
-      # the gw-qualified zone from /etc/bootstrap (network-loader). Pre-
-      # registration the uuid is empty, so the host falls back to the inert
-      # placeholder `overlay-pending.<gw>.bridges.internal` (a valid hostname).
+      # caddyInstanceUuid. GATEWAY-FREE by design: the host is
+      # <uuid>.waf.internal — NO gateway label, so re-homing a WAF across
+      # gateways never changes the name the operator dials (only the api's CNAME
+      # target moves). `waf.internal` is a fixed overlay zone (must match the
+      # api's _WAF_OVERLAY_ZONE); the gateway's edge-L4 regex matches this SNI
+      # and routes to <uuid>-peer.internal. CADDY_INSTANCE_UUID is the local-file
+      # secret (service.json), merged into env by the orchestrator before
+      # `compose up`. Pre-registration the uuid is empty, so the host falls back
+      # to the inert placeholder `overlay-pending.waf.internal` (valid hostname).
       #
-      # TLS = `internal` (Caddy's self-signed CA) FOR NOW: the cert issues
-      # instantly with no challenge, so the overlay site comes up clean with
-      # zero dependency on the gateway proxy side. End-to-end traffic does NOT
-      # flow yet (the gateway L4 has no <uuid>-peer.internal upstream) — this
-      # just stands up the dual-upstream caddy-internal for validation. When the
-      # proxy side lands (gateway publishes <uuid>-peer.internal + api flips the
-      # dial), switch caddy_2.tls back to the ACME issuer block (mirroring
-      # caddy_1) so the operator gets a real step-ca cert over the SNI front.
-      caddy_2: "${CADDY_INSTANCE_UUID:-overlay-pending}.${bridge_zone:-bridges.internal}"
+      # TLS = `internal` (Caddy's self-signed CA) FOR NOW: issues instantly, no
+      # challenge, so the overlay site comes up clean with zero dependency on the
+      # gateway. When the operator-cert path lands, switch caddy_2.tls to the
+      # ACME issuer block (mirroring caddy_1).
+      caddy_2: "${CADDY_INSTANCE_UUID:-overlay-pending}.waf.internal"
       caddy_2.tls: internal
       caddy_2.reverse_proxy: "127.0.0.1:8090"
       # Alloy docker-label discovery (see alloy.tmpl). caddy-bridge
