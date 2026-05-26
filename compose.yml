@@ -78,6 +78,12 @@ volumes:
   caddy_data:    { name: caddy_data }
   caddy_config:  { name: caddy_config }
   caddy_logs:    { name: caddy_logs }
+  # bridge_services — operator-managed file store (single flat dir). The
+  # caddy-bridge (bridge-stack) WRITES it via list/upload/delete-file; caddy-waf
+  # mounts it READ-ONLY below to consume the deposited files (CRS/data files,
+  # certs, branding). Same shared-volume pattern as caddy_data: created here,
+  # `keep` in the orchestrator service.json, `external` in the bridge-stack.
+  bridge_services: { name: bridge_services }
   # tunnel_state — WG keypair, /redeem package, mTLS cert, ZTK
   # secret. Explicit `name:` so docker compose doesn't project-
   # prefix it; the bridge-stack compose mounts it as external by
@@ -298,6 +304,10 @@ services:
       - caddy_data:/data
       - caddy_config:/config
       - caddy_logs:/var/log/caddy
+      # Operator-deposited files (via the bridge's file-manager actions),
+      # READ-ONLY: the WAF consumes them (CRS/data files, certs, branding); the
+      # bridge owns writes. Same path as the bridge mount, for least surprise.
+      - bridge_services:/var/lib/bridge-services:ro
     networks:
       - kit-admin
     healthcheck:

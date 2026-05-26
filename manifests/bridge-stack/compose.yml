@@ -44,6 +44,10 @@ volumes:
   caddy_logs:    { external: true, name: caddy_logs }
   alloy_data:    { external: true, name: alloy_data }
   valkey_data:   { external: true, name: valkey_data }
+  # bridge_services: the operator-managed file store (single flat dir) the
+  # bridge serves via list/upload/delete-file actions. Created by the
+  # orchestrator from service.json docker.volumes.
+  bridge_services: { external: true, name: bridge_services }
   # tunnel_state: created by the foundation compose
   # (waf/corewaf-starter-kit/compose.yml) with explicit `name:`
   # so the cross-project reference here lands on the same volume.
@@ -253,6 +257,9 @@ services:
       # that same file (LOCALFILE_SECRETS_DIR). Bridge runs as root, so it
       # can write alongside network-loader's root-owned state.
       - tunnel_state:/var/lib/tunnel
+      # Operator-managed file store (list/upload/delete-file actions). Single
+      # flat dir; matches caddy-bridge's BRIDGE_SERVICES_DIR default.
+      - bridge_services:/var/lib/bridge-services
       # Action handlers (`restart`, `get-logs`) talk to the docker
       # daemon directly.
       - /var/run/docker.sock:/var/run/docker.sock

@@ -29,7 +29,8 @@
         {"caddy_config": "keep"},
         {"caddy_logs": "keep"},
         {"alloy_data": "keep"},
-        {"valkey_data": "keep"}
+        {"valkey_data": "keep"},
+        {"bridge_services": "keep"}
       ]
     },
     "templates": [
