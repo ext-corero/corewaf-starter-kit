@@ -246,9 +246,13 @@ services:
       HEARTBEAT_INTERVAL_SECONDS: 30
       CADDY_MONITOR_INTERVAL_SECONDS: 60
     volumes:
-      # Read tunnel-state artifacts written by network-loader
-      # (package, secrets, mTLS cert).
-      - tunnel_state:/var/lib/tunnel:ro
+      # Read tunnel-state artifacts written by network-loader (package,
+      # secrets, mTLS cert). RW (not :ro) so the bridge can WRITE
+      # /var/lib/tunnel/caddy-instance-uuid after it learns its api-minted
+      # overlay uuid — the orchestrator's local-file secrets provider reads
+      # that same file (LOCALFILE_SECRETS_DIR). Bridge runs as root, so it
+      # can write alongside network-loader's root-owned state.
+      - tunnel_state:/var/lib/tunnel
       # Action handlers (`restart`, `get-logs`) talk to the docker
       # daemon directly.
       - /var/run/docker.sock:/var/run/docker.sock
@@ -291,6 +295,29 @@ services:
       caddy_1.tls.issuer.disable_http_challenge: ""
       # Same intra-netns hop as caddy_0 — stable loopback, not the WG clientIP.
       caddy_1.reverse_proxy: "127.0.0.1:8090"
+      # caddy_2 — the OVERLAY reverse-channel name, keyed on the api-minted
+      # caddyInstanceUuid instead of the underlay hw_id. Note the host shape:
+      # <uuid>.${bridge_zone} = <uuid>.<gw>.bridges.internal — it SHARES the
+      # gateway label with caddy_1 (<hw_id>.<gw>.bridges.internal) because the
+      # edge L4 SNI matcher is `*.<gw>.bridges.internal` (exactly one label
+      # before the gateway id) — a flat <uuid>.bridges.internal would never
+      # route. CADDY_INSTANCE_UUID is the local-file secret (service.json),
+      # merged into env by the orchestrator before `compose up`; bridge_zone is
+      # the gw-qualified zone from /etc/bootstrap (network-loader). Pre-
+      # registration the uuid is empty, so the host falls back to the inert
+      # placeholder `overlay-pending.<gw>.bridges.internal` (a valid hostname).
+      #
+      # TLS = `internal` (Caddy's self-signed CA) FOR NOW: the cert issues
+      # instantly with no challenge, so the overlay site comes up clean with
+      # zero dependency on the gateway proxy side. End-to-end traffic does NOT
+      # flow yet (the gateway L4 has no <uuid>-peer.internal upstream) — this
+      # just stands up the dual-upstream caddy-internal for validation. When the
+      # proxy side lands (gateway publishes <uuid>-peer.internal + api flips the
+      # dial), switch caddy_2.tls back to the ACME issuer block (mirroring
+      # caddy_1) so the operator gets a real step-ca cert over the SNI front.
+      caddy_2: "${CADDY_INSTANCE_UUID:-overlay-pending}.${bridge_zone:-bridges.internal}"
+      caddy_2.tls: internal
+      caddy_2.reverse_proxy: "127.0.0.1:8090"
       # Alloy docker-label discovery (see alloy.tmpl). caddy-bridge
       # exposes /metrics on its service port.
       prometheus.io/scrape: "true"

@@ -219,6 +219,20 @@ services:
     #   → docker compose up.
     # No `artifact` block in the bridge-stack manifest, so the OCI-pull
     # step is a no-op.
+    environment:
+      # The orchestrator's `local-file` secrets provider reads the
+      # caddy-instance-uuid from <LOCALFILE_SECRETS_DIR>/caddy-instance-uuid
+      # on the tunnel_state volume (written by caddy-bridge after it
+      # registers and learns its api-minted meta.uuid). Fetched as a
+      # secret → merged into env as CADDY_INSTANCE_UUID → expanded into
+      # the bridge-stack compose's overlay-site label.
+      #
+      # Set as a PLAIN env here, NOT via /etc/bootstrap: the overlay
+      # identity cycle must stay independent of the underlay (the
+      # tunnel renders /etc/bootstrap). Swapping to a centralized store
+      # later (WSM, AWS Secrets Manager) is a manifest `provider:`
+      # change only — this var simply goes unused then.
+      LOCALFILE_SECRETS_DIR: /var/lib/tunnel
     command:
       - run
       - --service-dir=${MOUNT_DIR:-${PWD}}/manifests/bridge-stack
