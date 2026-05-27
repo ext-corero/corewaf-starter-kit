@@ -44,6 +44,10 @@ volumes:
   caddy_logs:    { external: true, name: caddy_logs }
   alloy_data:    { external: true, name: alloy_data }
   valkey_data:   { external: true, name: valkey_data }
+  # bridge_services: the operator-managed file store (single flat dir) the
+  # bridge serves via list/upload/delete-file actions. Created by the
+  # orchestrator from service.json docker.volumes.
+  bridge_services: { external: true, name: bridge_services }
   # tunnel_state: created by the foundation compose
   # (waf/corewaf-starter-kit/compose.yml) with explicit `name:`
   # so the cross-project reference here lands on the same volume.
@@ -246,9 +250,16 @@ services:
       HEARTBEAT_INTERVAL_SECONDS: 30
       CADDY_MONITOR_INTERVAL_SECONDS: 60
     volumes:
-      # Read tunnel-state artifacts written by network-loader
-      # (package, secrets, mTLS cert).
-      - tunnel_state:/var/lib/tunnel:ro
+      # Read tunnel-state artifacts written by network-loader (package,
+      # secrets, mTLS cert). RW (not :ro) so the bridge can WRITE
+      # /var/lib/tunnel/caddy-instance-uuid after it learns its api-minted
+      # overlay uuid — the orchestrator's local-file secrets provider reads
+      # that same file (LOCALFILE_SECRETS_DIR). Bridge runs as root, so it
+      # can write alongside network-loader's root-owned state.
+      - tunnel_state:/var/lib/tunnel
+      # Operator-managed file store (list/upload/delete-file actions). Single
+      # flat dir; matches caddy-bridge's BRIDGE_SERVICES_DIR default.
+      - bridge_services:/var/lib/bridge-services
       # Action handlers (`restart`, `get-logs`) talk to the docker
       # daemon directly.
       - /var/run/docker.sock:/var/run/docker.sock
@@ -291,6 +302,32 @@ services:
       caddy_1.tls.issuer.disable_http_challenge: ""
       # Same intra-netns hop as caddy_0 — stable loopback, not the WG clientIP.
       caddy_1.reverse_proxy: "127.0.0.1:8090"
+      # caddy_2 — the OVERLAY reverse-channel name, keyed on the api-minted
+      # caddyInstanceUuid. GATEWAY-FREE by design: the host is
+      # <uuid>.waf.internal — NO gateway label, so re-homing a WAF across
+      # gateways never changes the name the operator dials (only the api's CNAME
+      # target moves). `waf.internal` is a fixed overlay zone (must match the
+      # api's _WAF_OVERLAY_ZONE); the gateway's edge-L4 regex matches this SNI
+      # and routes to <uuid>-peer.internal. CADDY_INSTANCE_UUID is the local-file
+      # secret (service.json), merged into env by the orchestrator before
+      # `compose up`. Pre-registration the uuid is empty, so the host falls back
+      # to the inert placeholder `overlay-pending.waf.internal` (valid hostname).
+      #
+      # TLS = the step-ca ACME issuer (mirrors caddy_1), so the overlay name is
+      # served with a REAL operator-CA cert — the caddy_api action proxy can then
+      # VERIFY TLS (no skip-verify) on the overlay dial. The ACME TLS-ALPN-01
+      # challenge for <uuid>.waf.internal reaches the kit through the gateway's
+      # edge-L4 @overlay matcher (acme-tls/1 passes through the same way the kit
+      # name does), and step-ca issues it like the caddy_1 bridge name.
+      # disable_http_challenge forces tls-alpn-01 (step-ca only reaches :443 via
+      # the L4 front, never :80). Pre-registration the placeholder host can't get
+      # a cert, but it's never dialed.
+      caddy_2: "${CADDY_INSTANCE_UUID:-overlay-pending}.waf.internal"
+      caddy_2.tls.issuer: acme
+      caddy_2.tls.issuer.dir: "${acme_url}"
+      caddy_2.tls.issuer.trusted_roots: /var/lib/tunnel/mtls/operator-ca.pem
+      caddy_2.tls.issuer.disable_http_challenge: ""
+      caddy_2.reverse_proxy: "127.0.0.1:8090"
       # Alloy docker-label discovery (see alloy.tmpl). caddy-bridge
       # exposes /metrics on its service port.
       prometheus.io/scrape: "true"

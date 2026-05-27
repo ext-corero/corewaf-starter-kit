@@ -29,7 +29,8 @@
         {"caddy_config": "keep"},
         {"caddy_logs": "keep"},
         {"alloy_data": "keep"},
-        {"valkey_data": "keep"}
+        {"valkey_data": "keep"},
+        {"bridge_services": "keep"}
       ]
     },
     "templates": [
@@ -38,6 +39,17 @@
         "destination": "runtime/config.alloy",
         "overwrite": true
       }
-    ]
+    ],
+    "secrets": {
+      "_comment": "Overlay identity. The api-minted caddyInstanceUuid is served from a file on the tunnel_state volume (LOCALFILE_SECRETS_DIR=/var/lib/tunnel, set on the foundation orchestrator container) that caddy-bridge writes after it registers and learns its meta.uuid. Rendered to CADDY_INSTANCE_UUID env → the bridge-stack compose overlay-site label resolves. allow_empty so first boot (file absent, pre-registration) brings the stack up on the placeholder site instead of failing the secrets gate. Move to a centralized store (waf-secret-manager / aws-secrets-manager) by changing only `provider`.",
+      "items": [
+        {
+          "name": "caddy-instance-uuid",
+          "env": "CADDY_INSTANCE_UUID",
+          "provider": "local-file",
+          "allow_empty": true
+        }
+      ]
+    }
   }
 }
