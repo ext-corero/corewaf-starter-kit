@@ -19,7 +19,7 @@
       "CADDY_INTERNAL_IMAGE": "ghcr.io/ext-corero/services/core/caddy-docker-proxy:1.0.0",
       "ALLOY_IMAGE": "grafana/alloy:v1.7.5",
       "VALKEY_IMAGE": "valkey/valkey:8",
-      "TUNNEL_CONTAINER_NAME": "corewaf-tunnel",
+      "NETNS_CONTAINER_NAME": "corewaf-netns",
       "ADMIN_NETWORK_NAME": "kit-admin"
     },
     "docker": {
