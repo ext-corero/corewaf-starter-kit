@@ -149,6 +149,36 @@ services:
   #
   # Phase 2 will add an `orchestrator` service that depends on this
   # being healthy and launches the bridge stack via docker socket.
+
+  # ------------------------------------------------------------------
+  # Netns holder — owns the network namespace (and wg100), decoupling
+  # the netns lifecycle from any app container's.
+  # ------------------------------------------------------------------
+  # The tunnel and the whole bridge-stack join THIS container's netns
+  # (network_mode: service:netns / container:corewaf-netns). It does
+  # nothing but hold the namespace open (a do-nothing tail), so it has
+  # no app logic to crash and ~never restarts. wg100 is created in here
+  # by the tunnel; because the holder persists across a tunnel
+  # restart/upgrade, wg100 (a kernel object in this netns) and every
+  # bridge container's attachment SURVIVE the tunnel being recreated —
+  # closing the netns "chasm" where recreating the tunnel left the
+  # bridge stranded on a dead namespace. The kit-admin NIC the
+  # netns-sharers inherit lives here too (moved off the tunnel).
+  netns:
+    image: alpine:3.20
+    pull_policy: missing
+    container_name: corewaf-netns
+    command: ["tail", "-f", "/dev/null"]
+    networks:
+      - kit-admin
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "true"]
+      interval: 30s
+      timeout: 3s
+      retries: 1
+    logging: *x-default-logging
+
   tunnel:
     image: ghcr.io/ext-corero/waf/network-loader:0.1.0
     container_name: corewaf-tunnel
@@ -157,12 +187,14 @@ services:
     cap_add:
       - NET_ADMIN
       - SYS_MODULE
-    networks:
-      # kit-admin attachment lets the bridge-stack containers (which
-      # share this container's netns via `network_mode: container:`)
-      # reach kit-admin services (valkey, eventually caddy-waf)
-      # through the NIC they inherit from us.
-      - kit-admin
+    # Join the holder's netns instead of owning our own. wg100 is set up
+    # here, in the holder's namespace, alongside the kit-admin NIC and
+    # every bridge-stack container. Because the holder persists across
+    # our restart/upgrade, wg100 and the bridge attachments survive us
+    # being recreated — no more orphaned netns. (network-loader's
+    # `wg-quick up` already no-ops on an existing wg100, so re-running
+    # tunnel mode against the surviving interface is safe.)
+    network_mode: "service:netns"
     devices:
       # TPM device for the PKCS#11/TPM-bound mTLS keypair. Soft-TPM
       # (swtpm) substrate in the multi-VM fixture exposes /dev/tpm0
@@ -187,6 +219,8 @@ services:
     depends_on:
       init:
         condition: service_completed_successfully
+      netns:
+        condition: service_started
     logging: *x-default-logging
 
   # ------------------------------------------------------------------
