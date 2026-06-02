@@ -1,0 +1,17 @@
+site_name: CoreWAF Starter Kit
+docs_dir: .
+
+nav:
+  - Home: README.md
+
+plugins:
+  - techdocs-core
+
+markdown_extensions:
+  - admonition
+  - codehilite
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format ''
