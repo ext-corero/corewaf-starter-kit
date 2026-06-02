@@ -16,3 +16,7 @@ spec:
   lifecycle: production
   owner: group:default/platform-team
   system: corewaf-waf
+  dependsOn:
+    - component:default/corewaf-waf-caddy-bridge
+    - component:default/corewaf-waf-dns-bridge
+    - component:default/corewaf-network-loader
