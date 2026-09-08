@@ -4,6 +4,9 @@ docs_dir: .
 nav:
   - Home: README.md
 
+exclude_docs: |
+  runtime/
+
 plugins:
   - techdocs-core
 
